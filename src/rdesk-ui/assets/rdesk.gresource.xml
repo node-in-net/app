@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/rdesk-ui/gtk">
+    <file compressed="true" preprocess="xml-stripblanks">desktop-mac.svg</file>
+    <file compressed="true" preprocess="xml-stripblanks">desktop-pc.svg</file>
+  </gresource>
+</gresources>

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=NodeInNet
+Comment=Your node in network
+Exec=nodeinnet-gtk
+Icon=com.nodeinnet.gtk
+Terminal=false
+Type=Application
+Categories=Utility;Security;Network;Internet
+StartupNotify=true

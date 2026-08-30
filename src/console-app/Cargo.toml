@@ -1,0 +1,29 @@
+[package]
+name = "console-app"
+version = "0.5.513"
+edition = "2024"
+
+[dependencies]
+app-version = { workspace = true }
+p2p-handlers = { workspace = true, default-features = false, features = ["feature-fm", "feature-net", "feature-registry", "feature-sync", "feature-sysinfo", "feature-terminal"] }
+nodeinnet-p2p = { workspace = true }
+common = { workspace = true }
+p2p-node = { workspace = true }
+client-core = { workspace = true, default-features = false }
+node-functions = { workspace = true }
+
+tokio = { version = "1.36", features = ["full"] }
+serde_json = "1.0"
+async-trait = "0.1"
+uuid = { version = "1.6", features = ["v4"] }
+hostname = "0.3"
+colored = "2.0" # For nice terminal colors
+reqwest = { version = "0.11", features = ["json"] }
+rpassword = "7.4.0"
+clap = { version = "4.6.0", features = ["derive"] }
+bson = { version = "3.1.0", features = ["serde", "uuid-1", "chrono-0_4"] }
+serde = { workspace = true, features = ["derive"] }
+open = "5.3.3"
+crossterm = "0.27.0"
+client-config = { workspace = true }
+chrono = "0.4"

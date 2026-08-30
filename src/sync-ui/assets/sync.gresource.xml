@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/sync-ui/gtk">
+    <file compressed="true" preprocess="xml-stripblanks">arrow-left.svg</file>
+    <file compressed="true" preprocess="xml-stripblanks">download.svg</file>
+    <file compressed="true" preprocess="xml-stripblanks">refresh.svg</file>
+    <file compressed="true" preprocess="xml-stripblanks">sync-folder.svg</file>
+  </gresource>
+</gresources>

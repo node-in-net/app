@@ -1,0 +1,19 @@
+[package]
+name = "wasm-node"
+version = "0.5.513"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+app-version = { workspace = true }
+nodeinnet-p2p = { workspace = true }
+wasm-bindgen = "0.2"
+serde_json = { workspace = true }
+js-sys = "0.3"
+lazy_static = "1.4.0"
+console_error_panic_hook = { version = "0.1.7" }
+uuid = { version = "1.7", features = ["v4"] }
+# Not called here: enables the `js` backend that rand/ed25519-dalek need on wasm32.
+getrandom = { version = "0.2", features = ["js"] }

@@ -1,0 +1,88 @@
+[package]
+name = "nodeinnet-gtk"
+version = "0.5.513"
+edition = "2021"
+description = "node.in.net desktop client: a GTK4/libadwaita peer-to-peer node."
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "nodeinnet-gtk"
+path = "src/main.rs"
+
+[dependencies]
+node-functions = { workspace = true, features = ["screen-capture"] }
+app-version = { workspace = true }
+gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
+adw = { package = "libadwaita", version = "0.7", features = ["v1_6"] }
+relm4 = { workspace = true }
+gtk-terminal-ui = { workspace = true }
+gtk-net-ui = { workspace = true }
+gtk-fm-ui = { workspace = true }
+gtk-rdesk-ui = { workspace = true }
+gtk-registry-ui = { workspace = true }
+gtk-sysinfo-ui = { workspace = true }
+gtk-viewer-ui = { workspace = true }
+gtk-updater-ui = { workspace = true }
+tokio = { workspace = true }
+client-config = { workspace = true }
+nodeinnet-i18n = { workspace = true }
+gtk-dialogs = { workspace = true }
+app-core = { path = "../app-core" }
+app-headless = { path = "../app-headless" }
+app-net = { path = "../app-net" }
+web-davserver = { workspace = true }
+async-trait = "0.1"
+serde_json = { workspace = true }
+hostname = "0.4"
+# Auto-updater: fetch updates.json, download and install.
+client-core = { workspace = true }
+common = { workspace = true }
+fm-core = { workspace = true }
+nodeinnet-utils = { workspace = true }
+md5 = "0.8.0"
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52.0", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }
+
+[build-dependencies]
+winresource = "0.1"
+glib-build-tools = "0.20"
+
+[package.metadata.bundle]
+name = "NodeInNet"
+identifier = "com.nodeinnet.gtkapp"
+icon = ["assets/icon-512.png"]
+version = "0.5.513"
+copyright = "Copyright © 2020 NodeInNet"
+category = "Utility"
+short_description = "Your node in network"
+plist = "Info.plist"
+
+[package.metadata.deb]
+maintainer = "NodeInNet Team <support@node.in.net>"
+copyright = "2020, NodeInNet Team"
+depends = "$auto, libgtk-4-1, libadwaita-1-0"
+section = "utils"
+priority = "optional"
+assets = [
+    ["../../bin/gtk-app/release/nodeinnet-gtk", "/usr/bin/nodeinnet-gtk", "755" ],
+    ["../../bin/node-network/release/libnode_network.so", "/usr/lib/nodeinnet/libnode_network.so", "755" ],
+    ["assets/com.nodeinnet.gtk.desktop", "usr/share/applications/", "644"],
+    ["assets/icon-512.png", "usr/share/icons/hicolor/512x512/apps/com.nodeinnet.gtk.png", "644"]
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "../../bin/gtk-app/release/nodeinnet-gtk", dest = "/usr/bin/nodeinnet-gtk", mode = "755" },
+    { source = "../../bin/node-network/release/libnode_network.so", dest = "/usr/lib/nodeinnet/libnode_network.so", mode = "755" },
+    { source = "assets/com.nodeinnet.gtk.desktop", dest = "/usr/share/applications/com.nodeinnet.gtk.desktop", mode = "644" },
+    { source = "assets/icon-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/com.nodeinnet.gtk.png", mode = "644" }
+]
+
+[package.metadata.generate-rpm.requires]
+gtk4 = "*"
+libadwaita = "*"

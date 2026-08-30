@@ -1,0 +1,8 @@
+[package]
+name = "app-version"
+version = "0.5.513"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]

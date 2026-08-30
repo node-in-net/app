@@ -1,0 +1,32 @@
+[package]
+name = "app-headless"
+version = "0.5.513"
+edition = "2021"
+description = "Headless REST/WS driver over app-core — the remake runs it with --headless; world-A component tests drive it (specs/19 §3-§4)."
+
+[dependencies]
+nodeinnet-p2p = { workspace = true }
+app-core = { workspace = true }
+app-net = { workspace = true }
+client-config = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+# WebDAV mount lifecycle (mount_resource/unmount_resource) — the shared,
+# GTK-free implementation the REST mount path drives.
+web-davserver = { workspace = true }
+actix = "0.13"
+actix-web = { workspace = true }
+actix-web-actors = "4.3"
+tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# the playground binary (src/main.rs): real local shell + P2P message types
+node-functions = { workspace = true }
+async-trait = "0.1"
+# /api/desktop/frame PNG snapshots (specs/19c §5)
+png = "0.17"
+
+[dev-dependencies]
+reqwest = { version = "0.11", default-features = false, features = ["json"] }
+tokio-tungstenite = "0.20"
+futures-util = "0.3"

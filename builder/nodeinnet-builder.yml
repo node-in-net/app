@@ -1,0 +1,57 @@
+
+services:
+  deb:
+    image: debian13-builder
+    working_dir: /home/builder/
+    user: builder
+    entrypoint: ["/home/builder/workdir/builder/build.sh", "deb"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - ../:/home/builder/workdir
+    environment:
+      - OUT_DIR
+  apk:
+    image: debian13-builder
+    working_dir: /home/builder
+    user: builder
+    entrypoint: ["/home/builder/workdir/builder/build.sh", "apk"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - ../:/home/builder/workdir
+    environment:
+      - OUT_DIR
+  rpm:
+    image: fedora41-builder
+    working_dir: /home/builder
+    user: builder
+    entrypoint: ["/home/builder/workdir/builder/build.sh", "rpm"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - ../:/home/builder/workdir
+    environment:
+      - OUT_DIR
+  zst:
+    image: arch-builder
+    working_dir: /home/builder
+    user: builder
+    entrypoint: ["/home/builder/workdir/builder/build.sh", "zst"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - ../:/home/builder/workdir
+    environment:
+      - OUT_DIR
+  exe:
+    image: msys-builder
+    working_dir: /home/builder
+    user: builder
+    entrypoint: ["/home/builder/workdir/builder/build.sh", "exe"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - ../:/home/builder/workdir/
+    environment:
+      - OUT_DIR

@@ -1,0 +1,22 @@
+node_modules
+bin
+distr
+artifacts
+.vscode
+.idea
+package-lock.json
+.env
+.DS_Store
+
+# Native generated binaries
+src/android-app/app/src/main/jniLibs/
+src/iphone-app/iphone_node.xcframework/
+src/iphone-app/**/*.xcodeproj/project.xcworkspace/
+src/iphone-app/**/*.xcodeproj/xcuserdata/
+bin/shots/
+
+# Android debug signing key. builder/build.sh restores it into ~/.android when present,
+# so debug builds keep one signature across machines; it is guarded by a file check and
+# simply does nothing without it. Not committed: a keystore in a public repository trips
+# every secret scanner, and the only thing lost is a stable DEBUG signature.
+src/android-app/debug.keystore

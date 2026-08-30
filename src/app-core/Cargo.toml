@@ -1,0 +1,17 @@
+[package]
+name = "app-core"
+version = "0.5.513"
+edition = "2021"
+description = "UI-agnostic action layer for the remake client: all view-state and user actions live here; GTK and the headless REST/WS server drive the same methods (specs/19 §3)."
+
+[dependencies]
+nodeinnet-p2p = { workspace = true }
+serde = { workspace = true }
+fm-core = { workspace = true }
+common = { workspace = true }
+async-trait = "0.1"
+tokio = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

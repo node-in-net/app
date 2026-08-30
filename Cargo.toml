@@ -1,0 +1,81 @@
+[workspace]
+members = [
+    "submodules/p2p-functions/web-davserver",
+    "src/utils",
+    "src/node-auth",
+    "src/gtk-app",
+    "src/app-version",
+    "src/app-core",
+    "src/app-headless",
+    "src/app-net",
+    "src/console-app",
+    "src/wasm-node",
+    "src/android-node",
+    "src/client-config",
+    "submodules/p2p-common/client-core",
+    "src/common",
+    "submodules/p2p-functions/node-functions",
+    "src/node-network",
+    "submodules/p2p-common/p2p-node",
+    "submodules/p2p-common/nodeinnet-api",
+    "submodules/p2p-common/nodeinnet-p2p",
+    "submodules/p2p-functions/p2p-handlers",
+    "src/i18n",
+    "src/fm-core",
+    "src/fm-ui",
+    "src/graph-ui",
+    "src/net-ui",
+    "src/sync-ui",
+    "src/sysinfo-ui",
+    "src/viewer-ui",
+    "src/rdesk-ui",
+    "src/terminal-ui",
+    "src/registry-ui",
+    "src/updater-ui",
+    "src/dialogs"
+]
+resolver = "2"
+
+[workspace.dependencies]
+actix-web = "4.5.1"
+actix-web-httpauth = "0.8.1"
+bytes = { version = "1.6.0", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.36", features = ["full"] }
+
+# Common P2P dependencies
+common = { path = "src/common" }
+nodeinnet-utils = { path = "src/utils" }
+client-core = { path = "submodules/p2p-common/client-core", default-features = false }
+nodeinnet-api = { path = "submodules/p2p-common/nodeinnet-api" }
+nodeinnet-p2p = { path = "submodules/p2p-common/nodeinnet-p2p" }
+client-config = { path = "src/client-config" }
+p2p-node = { path = "submodules/p2p-common/p2p-node", default-features = false }
+node-functions = { path = "submodules/p2p-functions/node-functions", default-features = false }
+p2p-handlers = { path = "submodules/p2p-functions/p2p-handlers", default-features = false }
+node-network = { path = "src/node-network" }
+
+# UI dependencies
+relm4 = { version = "0.9", features = ["libadwaita"] }
+fm-core = { path = "src/fm-core" }
+nodeinnet-i18n = { path = "src/i18n" }
+app-core = { path = "src/app-core" }
+app-headless = { path = "src/app-headless" }
+app-net = { path = "src/app-net" }
+gtk-fm-ui = { path = "src/fm-ui" }
+gtk-graph-ui = { path = "src/graph-ui" }
+gtk-net-ui = { path = "src/net-ui" }
+gtk-sync-ui = { path = "src/sync-ui" }
+gtk-sysinfo-ui = { path = "src/sysinfo-ui" }
+gtk-viewer-ui = { path = "src/viewer-ui" }
+gtk-rdesk-ui = { path = "src/rdesk-ui" }
+gtk-terminal-ui = { path = "src/terminal-ui" }
+gtk-registry-ui = { path = "src/registry-ui" }
+gtk-updater-ui = { path = "src/updater-ui" }
+gtk-dialogs = { path = "src/dialogs" }
+
+# Local dependencies
+app-version = { path = "src/app-version" }
+node-auth = { path = "src/node-auth", default-features = false }
+web-davserver = { path = "submodules/p2p-functions/web-davserver" }

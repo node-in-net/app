@@ -1,0 +1,30 @@
+[package]
+name = "android-node"
+version = "0.5.513"
+edition = "2021"
+
+[lib]
+name = "android_node"
+crate-type = ["cdylib"]
+
+[dependencies]
+app-version = { workspace = true }
+p2p-handlers = { workspace = true, default-features = false, features = ["feature-fm", "feature-net", "feature-sysinfo"] }
+nodeinnet-p2p = { workspace = true }
+jni = "0.21.1" # For mapping to Kotlin/Java native methods
+tokio = { workspace = true }
+client-core = { workspace = true, default-features = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The phone serves only files and network; feature-fm also drives our own downloads.
+p2p-node = { workspace = true }
+chrono = "0.4"
+lazy_static = "1.5.0"
+async-trait = "0.1.89"
+bson = { version = "3.1.0", features = ["serde", "uuid-1", "chrono-0_4"] }
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+client-config = { workspace = true }
+
+# Some Android-specific crates might be needed eventually,
+# such as tracing-android or similar log bridges, but this is a start.

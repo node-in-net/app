@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The logo's own blue, so the artwork sits on a seamless field whatever
+     mask shape the launcher applies. Sampled from src/gtk-app/assets/icon-512.png. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#5394CE" />
+</shape>
