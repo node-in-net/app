@@ -2,6 +2,7 @@
 
 mod app_root;
 mod bridge;
+mod clipboard;
 mod files;
 mod i18n;
 mod icons;

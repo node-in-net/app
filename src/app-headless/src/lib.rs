@@ -42,6 +42,21 @@ impl App {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferOrigin {
+    OtherPane(app_core::fm::TransferKind),
+    Clipboard,
+}
+
+impl From<TransferOrigin> for app_core::fm::TransferFrom {
+    fn from(o: TransferOrigin) -> Self {
+        match o {
+            TransferOrigin::OtherPane(kind) => Self::OtherPane(kind),
+            TransferOrigin::Clipboard => Self::Clipboard,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ApiCmd {
     SelectDevice {
@@ -128,6 +143,23 @@ pub enum ApiCmd {
     },
     FmCopy {
         side: Side,
+    },
+    FmClipboardSet {
+        side: Side,
+        kind: app_core::fm::TransferKind,
+    },
+    FmClipboardClear,
+    FmTransferPlan {
+        dest: Side,
+        from: TransferOrigin,
+        into: Option<String>,
+        reply: oneshot::Sender<app_core::fm::TransferPlan>,
+    },
+    FmTransferRun {
+        dest: Side,
+        from: TransferOrigin,
+        into: Option<String>,
+        resolutions: Vec<(String, app_core::fm::OnConflict)>,
     },
     FmMove {
         side: Side,
@@ -504,6 +536,31 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
         FmCopy { side } => {
             app.fm.copy_to(side).await;
         }
+        FmClipboardSet { side, kind } => {
+            app.fm.set_clipboard(side, kind);
+        }
+        FmClipboardClear => {
+            app.fm.clear_clipboard();
+        }
+        FmTransferPlan {
+            dest,
+            from,
+            into,
+            reply,
+        } => {
+            let plan = app.fm.plan_transfer(dest, from.into(), into).await;
+            let _ = reply.send(plan);
+        }
+        FmTransferRun {
+            dest,
+            from,
+            into,
+            resolutions,
+        } => {
+            app.fm
+                .run_transfer(dest, from.into(), into, resolutions)
+                .await;
+        }
         FmMove { side } => {
             app.fm.move_to(side).await;
         }
@@ -826,6 +883,7 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
             let _ = reply.send(json!({
                 "workspace": app.workspace.snapshot(),
                 "active_panel": app.fm.active(),
+                "clipboard": app.fm.clipboard(),
                 "left": app.fm.panel(Side::Left),
                 "right": app.fm.panel(Side::Right),
                 "terminal": app.terminal.state(),
@@ -1250,6 +1308,16 @@ fn parse_side(s: &str) -> Option<Side> {
     }
 }
 
+fn parse_conflict(s: &str) -> Option<app_core::fm::OnConflict> {
+    use app_core::fm::OnConflict;
+    match s {
+        "replace" => Some(OnConflict::Replace),
+        "skip" => Some(OnConflict::Skip),
+        "keep_both" => Some(OnConflict::KeepBoth),
+        _ => None,
+    }
+}
+
 fn parse_kind(s: &str) -> Option<ServiceKind> {
     ServiceKind::from_id(s)
 }
@@ -1281,6 +1349,7 @@ struct Body {
     data: Option<nodeinnet_p2p::p2p::RegistryValueData>,
     is_key: Option<bool>,
     paths: Option<Vec<String>>,
+    resolutions: Option<Vec<(String, String)>>,
     files: Option<bool>,
     terminal: Option<bool>,
     desktop: Option<bool>,
@@ -1714,6 +1783,26 @@ async fn post_panel(
         },
         "copy" => ApiCmd::FmCopy { side },
         "move" => ApiCmd::FmMove { side },
+        "clipboard_cut" => ApiCmd::FmClipboardSet {
+            side,
+            kind: app_core::fm::TransferKind::Move,
+        },
+        "clipboard_copy" => ApiCmd::FmClipboardSet {
+            side,
+            kind: app_core::fm::TransferKind::Copy,
+        },
+        "clipboard_clear" => ApiCmd::FmClipboardClear,
+        "paste" => ApiCmd::FmTransferRun {
+            dest: side,
+            from: TransferOrigin::Clipboard,
+            into: body.name,
+            resolutions: body
+                .resolutions
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(n, r)| parse_conflict(&r).map(|r| (n, r)))
+                .collect(),
+        },
         "duplicate" => match (body.path, body.new_name) {
             (Some(path), Some(new_name)) => ApiCmd::FmDuplicate {
                 side,

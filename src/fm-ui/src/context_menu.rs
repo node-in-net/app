@@ -2,7 +2,7 @@
 use adw::prelude::*;
 use relm4::ComponentSender;
 
-use crate::fm_view::{FmPanelModel, FmPanelOutput, Shared};
+use crate::fm_view::{ClipAction, FmPanelModel, FmPanelOutput, Shared};
 
 fn unique_copy_name(name: &str, is_dir: bool, existing: &[String]) -> String {
     let (stem, ext) = match (is_dir, name.rfind('.')) {
@@ -85,6 +85,56 @@ pub fn create_context_menu(
         }
     });
     vbox.append(&btn_copy);
+    vbox.append(
+        &gtk::Separator::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .build(),
+    );
+
+    for (label, icon, action, into) in [
+        (
+            crate::i18n::tr("fm.context.cut"),
+            "edit-cut-symbolic",
+            ClipAction::Cut,
+            None,
+        ),
+        (
+            crate::i18n::tr("fm.context.copy"),
+            "edit-copy-symbolic",
+            ClipAction::Copy,
+            None,
+        ),
+        (
+            crate::i18n::tr("fm.context.paste_here"),
+            "edit-paste-symbolic",
+            ClipAction::Paste,
+            None,
+        ),
+        (
+            crate::i18n::trf("fm.context.paste_into", &[("name", name)]),
+            "edit-paste-symbolic",
+            ClipAction::Paste,
+            Some(name.to_string()),
+        ),
+    ] {
+        if into.is_some() && !is_dir {
+            continue;
+        }
+        let btn = create_btn_with_label(&label, icon, "");
+        if action == ClipAction::Paste {
+            btn.set_sensitive(shared.clipboard_held.get() > 0);
+        }
+        let pop = popover.clone();
+        let sender = sender.clone();
+        btn.connect_clicked(move |_| {
+            pop.popdown();
+            let _ = sender.output(FmPanelOutput::Clip {
+                action,
+                into: into.clone(),
+            });
+        });
+        vbox.append(&btn);
+    }
     vbox.append(
         &gtk::Separator::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -181,6 +231,44 @@ pub fn create_context_menu(
     });
     vbox.append(&btn_chm);
 
+    popover.set_child(Some(&vbox));
+    popover
+}
+
+pub fn create_empty_space_menu(
+    shared: &Shared,
+    sender: &ComponentSender<FmPanelModel>,
+) -> gtk::Popover {
+    let popover = gtk::Popover::builder()
+        .position(gtk::PositionType::Bottom)
+        .has_arrow(true)
+        .build();
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    vbox.set_margin_start(4);
+    vbox.set_margin_end(4);
+    vbox.set_margin_top(4);
+    vbox.set_margin_bottom(4);
+
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    row.append(&gtk::Image::from_icon_name("edit-paste-symbolic"));
+    row.append(&gtk::Label::new(Some(&crate::i18n::tr(
+        "fm.context.paste_here",
+    ))));
+    let btn = gtk::Button::builder()
+        .child(&row)
+        .css_classes(vec!["flat"])
+        .build();
+    btn.set_sensitive(shared.clipboard_held.get() > 0);
+    let pop = popover.clone();
+    let sender = sender.clone();
+    btn.connect_clicked(move |_| {
+        pop.popdown();
+        let _ = sender.output(FmPanelOutput::Clip {
+            action: ClipAction::Paste,
+            into: None,
+        });
+    });
+    vbox.append(&btn);
     popover.set_child(Some(&vbox));
     popover
 }

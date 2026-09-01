@@ -8,6 +8,7 @@
     <file compressed="true" preprocess="xml-stripblanks">connect.svg</file>
     <file compressed="true" preprocess="xml-stripblanks">afternoon.svg</file>
     <file compressed="true" preprocess="xml-stripblanks">night.svg</file>
+    <file compressed="true" preprocess="xml-stripblanks">cancel.svg</file>
     <file compressed="true" preprocess="xml-stripblanks">copy.svg</file>
     <file compressed="true" preprocess="xml-stripblanks">cut.svg</file>
     <file compressed="true" preprocess="xml-stripblanks">delete-file.svg</file>

@@ -59,11 +59,74 @@ pub struct PanelState {
     pub mounted_as: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferKind {
+    Copy,
+    Move,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnConflict {
+    Replace,
+    Skip,
+    KeepBoth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferItem {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferFrom {
+    OtherPane(TransferKind),
+    Clipboard,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferPlan {
+    pub kind: TransferKind,
+    pub items: Vec<TransferItem>,
+    pub conflicts: Vec<String>,
+    pub from: String,
+    pub to: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipboardView {
+    pub kind: TransferKind,
+    pub count: usize,
+    pub side: Side,
+    pub source: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
     PanelUpdated { side: Side, panel: PanelState },
     ActivePanel { side: Side },
+    ClipboardChanged { clipboard: Option<ClipboardView> },
+}
+
+struct Clipboard {
+    kind: TransferKind,
+    provider: Rc<dyn FileSystemRpc>,
+    label: String,
+    side: Side,
+    cwd: String,
+    items: Vec<TransferItem>,
+}
+
+struct Source {
+    kind: TransferKind,
+    provider: Rc<dyn FileSystemRpc>,
+    cwd: String,
+    items: Vec<TransferItem>,
+    side: Option<Side>,
 }
 
 #[derive(Default)]
@@ -80,10 +143,25 @@ pub struct FileManager {
     right: Panel,
     active: Side,
     events: Vec<Event>,
+    clipboard: Option<Clipboard>,
 }
 
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+fn free_name(name: &str, taken: &[String]) -> String {
+    if !taken.iter().any(|t| t == name) {
+        return name.to_string();
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    (2..)
+        .map(|n| format!("{stem} ({n}){ext}"))
+        .find(|c| !taken.iter().any(|t| t == c))
+        .unwrap_or_else(|| name.to_string())
 }
 
 fn join(cwd: &str, name: &str) -> String {
@@ -94,30 +172,45 @@ fn join(cwd: &str, name: &str) -> String {
     }
 }
 
+async fn ensure_dir(
+    provider: &Rc<dyn FileSystemRpc>,
+    parent: &str,
+    name: &str,
+) -> Result<(), common::AppError> {
+    match provider
+        .create_directory(parent.to_string(), name.to_string(), None)
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(e) => match provider.list_dir(join(parent, name)).await {
+            Ok(_) => Ok(()),
+            Err(_) => Err(e),
+        },
+    }
+}
+
 async fn copy_entry(
     src_provider: &Rc<dyn FileSystemRpc>,
     dst_provider: &Rc<dyn FileSystemRpc>,
     src_path: &str,
     dst_parent: &str,
-    name: &str,
+    dst_name: &str,
     is_dir: bool,
 ) -> Result<(), common::AppError> {
     if !is_dir {
         let bytes = src_provider.read_file(src_path.to_string(), None).await?;
         return dst_provider
-            .write_file(join(dst_parent, name), bytes, None, None)
+            .write_file(join(dst_parent, dst_name), bytes, None, None)
             .await;
     }
 
     let mut queue = vec![(
         src_path.to_string(),
         dst_parent.to_string(),
-        name.to_string(),
+        dst_name.to_string(),
     )];
     while let Some((from, to_parent, dir_name)) = queue.pop() {
-        dst_provider
-            .create_directory(to_parent.clone(), dir_name.clone(), None)
-            .await?;
+        ensure_dir(dst_provider, &to_parent, &dir_name).await?;
         let here = join(&to_parent, &dir_name);
         for entry in src_provider.list_dir(from.clone()).await? {
             let child = join(&from, &entry.name);
@@ -439,127 +532,252 @@ impl FileManager {
         ok
     }
 
-    pub async fn copy_to(&mut self, dest: Side) -> bool {
-        let src = Self::other(dest);
-        let (Some(src_provider), Some(dst_provider)) = (self.provider(src), self.provider(dest))
-        else {
-            self.panel_mut(dest).state.last_error =
-                Some("both panes need a resource to copy".into());
-            self.emit(dest);
-            return false;
-        };
-        let (src_cwd, items) = {
-            let st = &self.panel_ref(src).state;
-            let indices: Vec<usize> = if st.selection.is_empty() {
-                if st.entries.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![st.cursor]
-                }
+    fn marked(&self, side: Side) -> (String, Vec<TransferItem>) {
+        let st = &self.panel_ref(side).state;
+        let indices: Vec<usize> = if st.selection.is_empty() {
+            if st.entries.is_empty() {
+                Vec::new()
             } else {
-                st.selection.clone()
-            };
-            let items: Vec<(String, bool)> = indices
-                .iter()
-                .filter_map(|i| st.entries.get(*i))
-                .map(|e| (e.name.clone(), e.is_dir))
-                .collect();
-            (st.cwd.clone(), items)
-        };
-        if items.is_empty() {
-            self.panel_mut(dest).state.last_error = Some("nothing selected to copy".into());
-            self.emit(dest);
-            return false;
-        }
-        let dst_cwd = self.panel_ref(dest).state.cwd.clone();
-        let mut ok_all = true;
-        let mut last_err: Option<String> = None;
-        for (name, is_dir) in items {
-            let src_path = join(&src_cwd, &name);
-            if let Err(e) = copy_entry(
-                &src_provider,
-                &dst_provider,
-                &src_path,
-                &dst_cwd,
-                &name,
-                is_dir,
-            )
-            .await
-            {
-                last_err = Some(e.to_string());
-                ok_all = false;
+                vec![st.cursor]
             }
-        }
-        let refreshed = self.set_dir(dest, &dst_cwd, true).await;
-        if let Some(e) = last_err {
-            self.panel_mut(dest).state.last_error = Some(e);
-        }
-        self.emit(dest);
-        ok_all && refreshed
+        } else {
+            st.selection.clone()
+        };
+        let items = indices
+            .iter()
+            .filter_map(|i| st.entries.get(*i))
+            .filter(|e| e.name != "." && e.name != "..")
+            .map(|e| TransferItem {
+                name: e.name.clone(),
+                is_dir: e.is_dir,
+            })
+            .collect();
+        (st.cwd.clone(), items)
     }
 
-    pub async fn move_to(&mut self, dest: Side) -> bool {
-        let src = Self::other(dest);
-        let (Some(src_provider), Some(dst_provider)) = (self.provider(src), self.provider(dest))
-        else {
-            self.panel_mut(dest).state.last_error =
-                Some("both panes need a resource to move".into());
+    fn resource_label(&self, side: Side) -> String {
+        let st = &self.panel_ref(side).state;
+        st.active_resource
+            .and_then(|i| st.resources.get(i))
+            .map(|r| r.label.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_clipboard(&mut self, side: Side, kind: TransferKind) -> bool {
+        let Some(provider) = self.provider(side) else {
+            return false;
+        };
+        let (cwd, items) = self.marked(side);
+        if items.is_empty() {
+            return false;
+        }
+        self.clipboard = Some(Clipboard {
+            kind,
+            provider,
+            label: self.resource_label(side),
+            side,
+            cwd,
+            items,
+        });
+        self.emit_clipboard();
+        true
+    }
+
+    pub fn clear_clipboard(&mut self) {
+        if self.clipboard.take().is_some() {
+            self.emit_clipboard();
+        }
+    }
+
+    pub fn clipboard(&self) -> Option<ClipboardView> {
+        self.clipboard.as_ref().map(|c| ClipboardView {
+            kind: c.kind,
+            count: c.items.len(),
+            side: c.side,
+            source: if c.label.is_empty() {
+                c.cwd.clone()
+            } else {
+                format!("{}:{}", c.label, c.cwd)
+            },
+        })
+    }
+
+    fn emit_clipboard(&mut self) {
+        let clipboard = self.clipboard();
+        self.events.push(Event::ClipboardChanged { clipboard });
+    }
+
+    fn source(&self, from: TransferFrom, dest: Side) -> Result<Source, String> {
+        match from {
+            TransferFrom::OtherPane(kind) => {
+                let side = Self::other(dest);
+                let provider = self
+                    .provider(side)
+                    .ok_or_else(|| "both panes need a resource".to_string())?;
+                let (cwd, items) = self.marked(side);
+                Ok(Source {
+                    kind,
+                    provider,
+                    cwd,
+                    items,
+                    side: Some(side),
+                })
+            }
+            TransferFrom::Clipboard => {
+                let c = self
+                    .clipboard
+                    .as_ref()
+                    .ok_or_else(|| "the clipboard is empty".to_string())?;
+                Ok(Source {
+                    kind: c.kind,
+                    provider: c.provider.clone(),
+                    cwd: c.cwd.clone(),
+                    items: c.items.clone(),
+                    side: Some(c.side),
+                })
+            }
+        }
+    }
+
+    fn dest_dir(&self, dest: Side, into: Option<&str>) -> String {
+        let cwd = self.panel_ref(dest).state.cwd.clone();
+        match into {
+            Some(name) if !name.is_empty() => join(&cwd, name),
+            _ => cwd,
+        }
+    }
+
+    pub async fn plan_transfer(
+        &mut self,
+        dest: Side,
+        from: TransferFrom,
+        into: Option<String>,
+    ) -> TransferPlan {
+        let to = self.dest_dir(dest, into.as_deref());
+        let (kind, items, src_cwd, error) = match self.source(from, dest) {
+            Ok(src) => (src.kind, src.items, src.cwd, None),
+            Err(e) => (
+                match from {
+                    TransferFrom::OtherPane(k) => k,
+                    TransferFrom::Clipboard => TransferKind::Copy,
+                },
+                Vec::new(),
+                String::new(),
+                Some(e),
+            ),
+        };
+        let mut plan = TransferPlan {
+            kind,
+            items,
+            conflicts: Vec::new(),
+            from: src_cwd,
+            to: to.clone(),
+            error,
+        };
+        if plan.error.is_some() {
+            return plan;
+        }
+        if plan.items.is_empty() {
+            plan.error = Some("nothing selected".into());
+            return plan;
+        }
+        let Some(dst_provider) = self.provider(dest) else {
+            plan.error = Some("both panes need a resource".into());
+            return plan;
+        };
+        if let Ok(existing) = dst_provider.list_dir(to).await {
+            let taken: Vec<&str> = existing.iter().map(|e| e.name.as_str()).collect();
+            plan.conflicts = plan
+                .items
+                .iter()
+                .filter(|i| taken.contains(&i.name.as_str()))
+                .map(|i| i.name.clone())
+                .collect();
+        }
+        plan
+    }
+
+    pub async fn run_transfer(
+        &mut self,
+        dest: Side,
+        from: TransferFrom,
+        into: Option<String>,
+        resolutions: Vec<(String, OnConflict)>,
+    ) -> bool {
+        let src = match self.source(from, dest) {
+            Ok(src) => src,
+            Err(e) => {
+                self.panel_mut(dest).state.last_error = Some(e);
+                self.emit(dest);
+                return false;
+            }
+        };
+        let Some(dst_provider) = self.provider(dest) else {
+            self.panel_mut(dest).state.last_error = Some("both panes need a resource".into());
             self.emit(dest);
             return false;
         };
-        let same_provider = Rc::ptr_eq(&src_provider, &dst_provider);
-
-        let (src_cwd, items) = {
-            let st = &self.panel_ref(src).state;
-            let indices: Vec<usize> = if st.selection.is_empty() {
-                if st.entries.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![st.cursor]
-                }
-            } else {
-                st.selection.clone()
-            };
-            let items: Vec<(String, bool)> = indices
-                .iter()
-                .filter_map(|i| st.entries.get(*i))
-                .map(|e| (e.name.clone(), e.is_dir))
-                .collect();
-            (st.cwd.clone(), items)
-        };
-        if items.is_empty() {
-            self.panel_mut(dest).state.last_error = Some("nothing selected to move".into());
+        if src.items.is_empty() {
+            self.panel_mut(dest).state.last_error = Some("nothing selected".into());
             self.emit(dest);
             return false;
         }
 
-        let dst_cwd = self.panel_ref(dest).state.cwd.clone();
+        let dst_dir = self.dest_dir(dest, into.as_deref());
+        let mut taken: Vec<String> = dst_provider
+            .list_dir(dst_dir.clone())
+            .await
+            .map(|e| e.into_iter().map(|e| e.name).collect())
+            .unwrap_or_default();
+
+        let same_provider = Rc::ptr_eq(&src.provider, &dst_provider);
+        let moving = src.kind == TransferKind::Move;
+
         let mut ok_all = true;
         let mut last_err: Option<String> = None;
-        for (name, is_dir) in items {
-            let src_path = join(&src_cwd, &name);
-            if same_provider {
-                let dst_path = join(&dst_cwd, &name);
-                if let Err(e) = src_provider.rename_entry(src_path, dst_path).await {
+        for item in &src.items {
+            let src_path = join(&src.cwd, &item.name);
+            let dst_name = match resolutions
+                .iter()
+                .find(|(n, _)| n == &item.name)
+                .map(|(_, r)| *r)
+            {
+                Some(OnConflict::Skip) => continue,
+                Some(OnConflict::KeepBoth) => free_name(&item.name, &taken),
+                Some(OnConflict::Replace) | None => item.name.clone(),
+            };
+            if same_provider && src_path == join(&dst_dir, &dst_name) {
+                continue;
+            }
+            taken.push(dst_name.clone());
+
+            if moving && same_provider {
+                if let Err(e) = src
+                    .provider
+                    .rename_entry(src_path, join(&dst_dir, &dst_name))
+                    .await
+                {
                     last_err = Some(e.to_string());
                     ok_all = false;
                 }
                 continue;
             }
             match copy_entry(
-                &src_provider,
+                &src.provider,
                 &dst_provider,
                 &src_path,
-                &dst_cwd,
-                &name,
-                is_dir,
+                &dst_dir,
+                &dst_name,
+                item.is_dir,
             )
             .await
             {
                 Ok(()) => {
-                    if let Err(e) = src_provider.delete_entries(vec![src_path]).await {
-                        last_err = Some(e.to_string());
-                        ok_all = false;
+                    if moving {
+                        if let Err(e) = src.provider.delete_entries(vec![src_path]).await {
+                            last_err = Some(e.to_string());
+                            ok_all = false;
+                        }
                     }
                 }
                 Err(e) => {
@@ -569,14 +787,45 @@ impl FileManager {
             }
         }
 
-        let refreshed_dest = self.set_dir(dest, &dst_cwd, true).await;
-        let refreshed_src = self.set_dir(src, &src_cwd, true).await;
+        if from == TransferFrom::Clipboard {
+            self.clipboard = None;
+            self.emit_clipboard();
+        }
+
+        let dest_cwd = self.panel_ref(dest).state.cwd.clone();
+        let mut refreshed = self.set_dir(dest, &dest_cwd, true).await;
         if let Some(e) = last_err {
             self.panel_mut(dest).state.last_error = Some(e);
         }
         self.emit(dest);
-        self.emit(src);
-        ok_all && refreshed_dest && refreshed_src
+        if moving {
+            if let Some(side) = src.side {
+                let src_cwd = self.panel_ref(side).state.cwd.clone();
+                refreshed = self.set_dir(side, &src_cwd, true).await && refreshed;
+                self.emit(side);
+            }
+        }
+        ok_all && refreshed
+    }
+
+    pub async fn copy_to(&mut self, dest: Side) -> bool {
+        self.run_transfer(
+            dest,
+            TransferFrom::OtherPane(TransferKind::Copy),
+            None,
+            Vec::new(),
+        )
+        .await
+    }
+
+    pub async fn move_to(&mut self, dest: Side) -> bool {
+        self.run_transfer(
+            dest,
+            TransferFrom::OtherPane(TransferKind::Move),
+            None,
+            Vec::new(),
+        )
+        .await
     }
 
     pub async fn duplicate(&mut self, side: Side, src: String, dst: String) -> bool {
@@ -594,7 +843,8 @@ impl FileManager {
                 .unwrap_or(false);
             (st.cwd.clone(), is_dir)
         };
-        let ok = match copy_entry(&provider, &provider, &src, &cwd, basename(&dst), is_dir).await {
+        let name = basename(&dst);
+        let ok = match copy_entry(&provider, &provider, &src, &cwd, name, is_dir).await {
             Ok(()) => self.set_dir(side, &cwd, true).await,
             Err(e) => {
                 self.panel_mut(side).state.last_error = Some(e.to_string());
@@ -1138,6 +1388,348 @@ mod tests {
         fs.fail.set(true);
         assert!(!fm.chmod(Side::Right, "/readme.md", 0o600).await);
         assert_eq!(fm.panel(Side::Right).last_error.as_deref(), Some("io boom"));
+    }
+
+    #[tokio::test]
+    async fn cut_remembers_the_marked_entries_and_survives_a_refresh() {
+        let (mut fm, _fs) = fm_ready().await;
+        fm.toggle_select(Side::Right, 0);
+        fm.toggle_select(Side::Right, 2);
+
+        assert!(fm.set_clipboard(Side::Right, TransferKind::Move));
+        let view = fm.clipboard().expect("the clipboard holds the marks");
+        assert_eq!(view.count, 2);
+        assert_eq!(view.kind, TransferKind::Move);
+        assert_eq!(
+            view.side,
+            Side::Right,
+            "the badge belongs to the pane acted on"
+        );
+
+        fm.refresh(Side::Right).await;
+        assert!(fm.panel(Side::Right).selection.is_empty());
+        assert_eq!(fm.clipboard().map(|c| c.count), Some(2));
+    }
+
+    #[tokio::test]
+    async fn the_parent_link_is_never_something_to_transfer() {
+        let (mut fm, _fs) = fm_ready().await;
+        fm.set_resources(Side::Left, {
+            let fs = Rc::new(FakeFs::default());
+            fs.dirs.borrow_mut().insert(
+                "/".into(),
+                vec![fentry("..", true, 0), fentry("real.txt", false, 3)],
+            );
+            fs.files
+                .borrow_mut()
+                .insert("/real.txt".into(), b"abc".to_vec());
+            vec![(tab("dots"), fs as Rc<dyn FileSystemRpc>)]
+        });
+        fm.select_resource(Side::Left, 0).await;
+
+        fm.toggle_select(Side::Left, 0);
+        fm.toggle_select(Side::Left, 1);
+        assert!(fm.set_clipboard(Side::Left, TransferKind::Copy));
+        assert_eq!(
+            fm.clipboard().map(|c| c.count),
+            Some(1),
+            "only the real entry may be held",
+        );
+
+        fm.clear_clipboard();
+        fm.toggle_select(Side::Left, 1);
+        assert!(!fm.set_clipboard(Side::Left, TransferKind::Copy));
+        assert!(fm.clipboard().is_none());
+    }
+
+    #[tokio::test]
+    async fn copying_with_nothing_marked_takes_the_cursor_entry() {
+        let (mut fm, _fs) = fm_ready().await;
+        fm.set_cursor(Side::Right, 1);
+        assert!(fm.set_clipboard(Side::Right, TransferKind::Copy));
+        assert_eq!(fm.clipboard().map(|c| c.count), Some(1));
+    }
+
+    #[tokio::test]
+    async fn an_empty_pane_puts_nothing_on_the_clipboard() {
+        let mut fm = FileManager::new();
+        assert!(!fm.set_clipboard(Side::Right, TransferKind::Copy));
+        assert!(fm.clipboard().is_none());
+    }
+
+    #[tokio::test]
+    async fn clearing_the_clipboard_announces_itself() {
+        let (mut fm, _fs) = fm_ready().await;
+        fm.set_cursor(Side::Right, 1);
+        fm.set_clipboard(Side::Right, TransferKind::Copy);
+        fm.take_events();
+
+        fm.clear_clipboard();
+        assert!(matches!(
+            fm.take_events().last(),
+            Some(Event::ClipboardChanged { clipboard: None })
+        ));
+        fm.clear_clipboard();
+        assert!(fm.take_events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_plan_names_what_the_destination_already_holds() {
+        let (mut fm, _src) = fm_ready().await;
+        let dest = Rc::new(FakeFs::default());
+        dest.dirs
+            .borrow_mut()
+            .insert("/".into(), vec![fentry("readme.md", false, 1)]);
+        dest.files
+            .borrow_mut()
+            .insert("/readme.md".into(), b"older".to_vec());
+        fm.set_resources(Side::Left, vec![(tab("dest"), dest.clone())]);
+        fm.select_resource(Side::Left, 0).await;
+
+        fm.toggle_select(Side::Right, 1);
+        fm.toggle_select(Side::Right, 2);
+        fm.set_clipboard(Side::Right, TransferKind::Copy);
+
+        let plan = fm
+            .plan_transfer(Side::Left, TransferFrom::Clipboard, None)
+            .await;
+        assert_eq!(plan.items.len(), 2);
+        assert_eq!(plan.conflicts, vec!["readme.md"]);
+        assert_eq!(plan.to, "/");
+        assert!(plan.error.is_none());
+        assert_eq!(
+            dest.files.borrow().get("/readme.md").cloned(),
+            Some(b"older".to_vec()),
+            "planning must not touch a byte",
+        );
+    }
+
+    #[tokio::test]
+    async fn planning_an_empty_clipboard_reports_why() {
+        let (mut fm, _fs) = fm_ready().await;
+        let plan = fm
+            .plan_transfer(Side::Right, TransferFrom::Clipboard, None)
+            .await;
+        assert_eq!(plan.error.as_deref(), Some("the clipboard is empty"));
+        assert!(plan.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn skip_leaves_the_existing_file_alone() {
+        let (mut fm, _src) = fm_ready().await;
+        let dest = Rc::new(FakeFs::default());
+        dest.dirs
+            .borrow_mut()
+            .insert("/".into(), vec![fentry("readme.md", false, 1)]);
+        dest.files
+            .borrow_mut()
+            .insert("/readme.md".into(), b"older".to_vec());
+        fm.set_resources(Side::Left, vec![(tab("dest"), dest.clone())]);
+        fm.select_resource(Side::Left, 0).await;
+
+        fm.set_cursor(Side::Right, 1);
+        fm.set_clipboard(Side::Right, TransferKind::Copy);
+        fm.run_transfer(
+            Side::Left,
+            TransferFrom::Clipboard,
+            None,
+            vec![("readme.md".into(), OnConflict::Skip)],
+        )
+        .await;
+
+        assert_eq!(
+            dest.files.borrow().get("/readme.md").cloned(),
+            Some(b"older".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_overwrites_the_existing_file() {
+        let (mut fm, _src) = fm_ready().await;
+        let dest = Rc::new(FakeFs::default());
+        dest.dirs
+            .borrow_mut()
+            .insert("/".into(), vec![fentry("readme.md", false, 1)]);
+        dest.files
+            .borrow_mut()
+            .insert("/readme.md".into(), b"older".to_vec());
+        fm.set_resources(Side::Left, vec![(tab("dest"), dest.clone())]);
+        fm.select_resource(Side::Left, 0).await;
+
+        fm.set_cursor(Side::Right, 1);
+        fm.set_clipboard(Side::Right, TransferKind::Copy);
+        assert!(
+            fm.run_transfer(
+                Side::Left,
+                TransferFrom::Clipboard,
+                None,
+                vec![("readme.md".into(), OnConflict::Replace)],
+            )
+            .await
+        );
+
+        assert_eq!(
+            dest.files.borrow().get("/readme.md").cloned(),
+            Some(b"readme-content".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn keep_both_lands_beside_the_existing_file() {
+        let (mut fm, _src) = fm_ready().await;
+        let dest = Rc::new(FakeFs::default());
+        dest.dirs
+            .borrow_mut()
+            .insert("/".into(), vec![fentry("readme.md", false, 1)]);
+        dest.files
+            .borrow_mut()
+            .insert("/readme.md".into(), b"older".to_vec());
+        fm.set_resources(Side::Left, vec![(tab("dest"), dest.clone())]);
+        fm.select_resource(Side::Left, 0).await;
+
+        fm.set_cursor(Side::Right, 1);
+        fm.set_clipboard(Side::Right, TransferKind::Copy);
+        assert!(
+            fm.run_transfer(
+                Side::Left,
+                TransferFrom::Clipboard,
+                None,
+                vec![("readme.md".into(), OnConflict::KeepBoth)],
+            )
+            .await
+        );
+
+        assert_eq!(
+            dest.files.borrow().get("/readme.md").cloned(),
+            Some(b"older".to_vec()),
+            "the file that was there stays untouched",
+        );
+        assert_eq!(
+            dest.files.borrow().get("/readme (2).md").cloned(),
+            Some(b"readme-content".to_vec()),
+        );
+    }
+
+    #[tokio::test]
+    async fn pasting_a_folder_onto_one_with_the_same_name_merges_instead_of_failing() {
+        let (mut fm, _src) = fm_ready().await;
+        let dest = Rc::new(FakeFs::default());
+        dest.dirs
+            .borrow_mut()
+            .insert("/".into(), vec![fentry("docs", true, 0)]);
+        dest.dirs
+            .borrow_mut()
+            .insert("/docs".into(), vec![fentry("keepme.txt", false, 1)]);
+        dest.files
+            .borrow_mut()
+            .insert("/docs/keepme.txt".into(), b"mine".to_vec());
+        fm.set_resources(Side::Left, vec![(tab("dest"), dest.clone())]);
+        fm.select_resource(Side::Left, 0).await;
+
+        fm.set_cursor(Side::Right, 0);
+        fm.set_clipboard(Side::Right, TransferKind::Copy);
+        assert!(
+            fm.run_transfer(
+                Side::Left,
+                TransferFrom::Clipboard,
+                None,
+                vec![("docs".into(), OnConflict::Replace)],
+            )
+            .await,
+            "creating a directory that is already there must not fail the transfer",
+        );
+
+        assert!(dest.files.borrow().contains_key("/docs/notes.md"));
+        assert!(dest.files.borrow().contains_key("/docs/keepme.txt"));
+    }
+
+    #[tokio::test]
+    async fn a_paste_empties_the_clipboard() {
+        let (mut fm, _src) = fm_ready().await;
+        let dest = Rc::new(FakeFs::default());
+        dest.dirs.borrow_mut().insert("/".into(), Vec::new());
+        fm.set_resources(Side::Left, vec![(tab("dest"), dest.clone())]);
+        fm.select_resource(Side::Left, 0).await;
+
+        fm.set_cursor(Side::Right, 1);
+        fm.set_clipboard(Side::Right, TransferKind::Copy);
+        assert!(fm.clipboard().is_some());
+
+        fm.run_transfer(Side::Left, TransferFrom::Clipboard, None, Vec::new())
+            .await;
+        assert!(fm.clipboard().is_none(), "a paste consumes what it pasted");
+    }
+
+    #[tokio::test]
+    async fn pasting_into_a_named_folder_lands_inside_it() {
+        let (mut fm, src) = fm_ready().await;
+        fm.set_resources(Side::Left, vec![(tab("same"), src.clone())]);
+        fm.select_resource(Side::Left, 0).await;
+
+        fm.set_cursor(Side::Right, 1);
+        fm.set_clipboard(Side::Right, TransferKind::Copy);
+        assert!(
+            fm.run_transfer(
+                Side::Left,
+                TransferFrom::Clipboard,
+                Some("docs".into()),
+                Vec::new(),
+            )
+            .await
+        );
+
+        assert!(src.files.borrow().contains_key("/docs/readme.md"));
+        assert!(
+            src.files.borrow().contains_key("/readme.md"),
+            "a copy leaves the original where it was",
+        );
+    }
+
+    #[tokio::test]
+    async fn cutting_and_pasting_inside_one_pane_moves_without_a_round_trip() {
+        let (mut fm, src) = fm_ready().await;
+        fm.set_cursor(Side::Right, 1);
+        fm.set_clipboard(Side::Right, TransferKind::Move);
+
+        assert!(
+            fm.run_transfer(
+                Side::Right,
+                TransferFrom::Clipboard,
+                Some("docs".into()),
+                Vec::new(),
+            )
+            .await
+        );
+
+        assert!(src.files.borrow().contains_key("/docs/readme.md"));
+        assert!(!src.files.borrow().contains_key("/readme.md"));
+        assert!(!names(&fm, Side::Right).contains(&"readme.md".to_string()));
+    }
+
+    #[tokio::test]
+    async fn pasting_a_cut_into_the_folder_it_came_from_is_a_no_op() {
+        let (mut fm, src) = fm_ready().await;
+        fm.set_cursor(Side::Right, 1);
+        fm.set_clipboard(Side::Right, TransferKind::Move);
+
+        fm.run_transfer(Side::Right, TransferFrom::Clipboard, None, Vec::new())
+            .await;
+        assert!(
+            src.files.borrow().contains_key("/readme.md"),
+            "renaming an entry onto itself must not delete it",
+        );
+    }
+
+    #[test]
+    fn free_name_walks_past_what_is_taken() {
+        let taken = vec!["report.pdf".to_string(), "report (2).pdf".to_string()];
+        assert_eq!(free_name("report.pdf", &taken), "report (3).pdf");
+        assert_eq!(free_name("fresh.pdf", &taken), "fresh.pdf");
+        assert_eq!(free_name("noext", &["noext".to_string()]), "noext (2)");
+        assert_eq!(
+            free_name(".hidden", &[".hidden".to_string()]),
+            ".hidden (2)"
+        );
     }
 
     #[tokio::test]

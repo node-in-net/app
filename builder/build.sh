@@ -30,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKDIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 show_usage() {
-    echo "Usage: $0 <platform> [app] [--publish]"
+    echo "Usage: $0 <platform> [app]"
     echo "Supported platforms:"
     echo "  deb   - Debian Package (.deb)"
     echo "  rpm   - Fedora Package (.rpm)"
@@ -40,7 +40,6 @@ show_usage() {
     echo "  apk   - Android Application Package (.apk)"
     echo "Optional arguments:"
     echo "  [app]       - Application target name (default: gtk-app)"
-    echo "  --publish   - Publish build outputs to OTA update servers"
     exit 1
 }
 
@@ -53,14 +52,9 @@ PLATFORM="$1"
 shift
 
 APP="gtk-app"
-PUBLISH=false
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --publish)
-            PUBLISH=true
-            shift
-            ;;
         *)
             APP="$1"
             shift
@@ -102,21 +96,6 @@ else
     exit 1
 fi
 
-# Load Env file. The .env now lives ONE LEVEL ABOVE the app repo (next to
-# build-nodeinnet.sh) — read directly for local runs (dmg). For docker runs that
-# parent dir isn't mounted, so compose injects the vars via `env_file` and the
-# file search below simply finds nothing (the vars are already in the environment).
-ENV_FILE="$WORKDIR/../.env"
-[ -f "$ENV_FILE" ] || ENV_FILE="$WORKDIR/.env"                 # fallback: inside app/
-[ -f "$ENV_FILE" ] || ENV_FILE="/home/builder/workdir/.env"   # fallback: container mount
-
-if [ -f "$ENV_FILE" ]; then
-    set -a
-    source "$ENV_FILE"
-    set +a
-    log_info "Loaded environment variables from $ENV_FILE"
-fi
-
 # Map human-readable app to gen-version.js expected app_type
 case "$APP" in
     gtk-app|gui)
@@ -135,7 +114,7 @@ esac
 
 log_info "----------------------------------------"
 log_info "Starting compilation: Platform=$PLATFORM, App=$APP (Type: $GEN_APP_TYPE)"
-log_info "Version: v$VERSION, Publish: $PUBLISH"
+log_info "Version: v$VERSION"
 if command -v rustc &> /dev/null; then log_info "Rust version: $(rustc --version)"; fi
 if command -v node &> /dev/null; then log_info "Node.js version: $(node --version)"; fi
 log_info "----------------------------------------"

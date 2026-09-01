@@ -1,6 +1,6 @@
 use adw::prelude::*;
-use app_core::fm::{PanelState, Side};
-use app_headless::ApiCmd;
+use app_core::fm::{ClipboardView, PanelState, Side, TransferKind};
+use app_headless::{ApiCmd, TransferOrigin};
 use gtk_fm_ui::{
     BreadcrumbSegment, FmPanelInit, FmPanelInput, FmPanelModel, FmPanelOutput, RemoteFileEntry,
     SourceInfo,
@@ -36,6 +36,7 @@ pub struct FilesPane {
     right: relm4::Controller<FmPanelModel>,
     left_state: Rc<RefCell<SideState>>,
     right_state: Rc<RefCell<SideState>>,
+    clips: [crate::clipboard::ClipButtons; 2],
 }
 
 type ActiveSide = Rc<Cell<Side>>;
@@ -44,16 +45,41 @@ impl FilesPane {
     pub fn new(cmd: UnboundedSender<ApiCmd>, config: client_config::AppConfig) -> Self {
         let left_state = Rc::new(RefCell::new(SideState::default()));
         let right_state = Rc::new(RefCell::new(SideState::default()));
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let window_of = {
+            let root = root.clone();
+            Rc::new(move || root.root().and_downcast::<gtk::Window>()) as Rc<dyn Fn() -> _>
+        };
         let cmd_for_keys = cmd.clone();
 
+        let left_clip = crate::clipboard::ClipButtons::new(
+            Side::Left,
+            &cmd,
+            arm_fn(&cmd, Side::Left, &left_state),
+        );
+        let right_clip = crate::clipboard::ClipButtons::new(
+            Side::Right,
+            &cmd,
+            arm_fn(&cmd, Side::Right, &right_state),
+        );
         let left = build_panel(
             Side::Left,
             "fm-left",
             cmd.clone(),
             config.clone(),
             left_state.clone(),
+            &left_clip,
+            window_of.clone(),
         );
-        let right = build_panel(Side::Right, "fm-right", cmd, config, right_state.clone());
+        let right = build_panel(
+            Side::Right,
+            "fm-right",
+            cmd,
+            config,
+            right_state.clone(),
+            &right_clip,
+            window_of,
+        );
 
         let active: ActiveSide = Rc::new(Cell::new(Side::Left));
         for w in [left.widget(), right.widget()] {
@@ -74,7 +100,6 @@ impl FilesPane {
 
         let states = (left_state.clone(), right_state.clone());
         let panels = (left.sender().clone(), right.sender().clone());
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.append(&paned);
         let (bar, shift_labels) = fkey_bar(&cmd_for_keys, &active, &states);
         root.append(&bar);
@@ -93,6 +118,17 @@ impl FilesPane {
             right,
             left_state,
             right_state,
+            clips: [left_clip, right_clip],
+        }
+    }
+
+    pub fn set_clipboard(&self, view: Option<&ClipboardView>) {
+        for c in &self.clips {
+            c.set(view);
+        }
+        let held = view.map(|v| v.count).unwrap_or(0);
+        for ctl in [&self.left, &self.right] {
+            let _ = ctl.sender().send(FmPanelInput::ClipboardHeld(held));
         }
     }
 
@@ -335,12 +371,12 @@ fn install_fkeys(
             .widget()
             .and_then(|w| w.root())
             .and_downcast::<gtk::Window>();
+        let typing = window
+            .as_ref()
+            .and_then(gtk::prelude::GtkWindowExt::focus)
+            .map(|w| w.is::<gtk::Editable>())
+            .unwrap_or(false);
         if matches!(keyval, gtk::gdk::Key::Tab | gtk::gdk::Key::ISO_Left_Tab) {
-            let typing = window
-                .as_ref()
-                .and_then(gtk::prelude::GtkWindowExt::focus)
-                .map(|w| w.is::<gtk::Editable>())
-                .unwrap_or(false);
             if typing {
                 return gtk::glib::Propagation::Proceed;
             }
@@ -350,6 +386,35 @@ fn install_fkeys(
                 Side::Right => left,
             };
             let _ = other.send(FmPanelInput::GrabFocus);
+            return gtk::glib::Propagation::Stop;
+        }
+        if state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+            if typing {
+                return gtk::glib::Propagation::Proceed;
+            }
+            let side = active.get();
+            let state = match side {
+                Side::Left => &states.0,
+                Side::Right => &states.1,
+            };
+            match keyval {
+                gtk::gdk::Key::x | gtk::gdk::Key::X => {
+                    arm_clipboard(&cmd, side, state, TransferKind::Move);
+                }
+                gtk::gdk::Key::c | gtk::gdk::Key::C => {
+                    arm_clipboard(&cmd, side, state, TransferKind::Copy);
+                }
+                gtk::gdk::Key::v | gtk::gdk::Key::V => {
+                    crate::clipboard::start_transfer(
+                        window.clone(),
+                        cmd.clone(),
+                        side,
+                        TransferOrigin::Clipboard,
+                        None,
+                    );
+                }
+                _ => return gtk::glib::Propagation::Proceed,
+            }
             return gtk::glib::Propagation::Stop;
         }
         let shift = shift_labels.held.get() || state.contains(gtk::gdk::ModifierType::SHIFT_MASK);
@@ -370,15 +435,70 @@ fn install_fkeys(
     root.add_controller(keys);
 }
 
-fn targets(panel: &PanelState, marked: &[String]) -> Vec<String> {
-    if !marked.is_empty() {
-        return marked.to_vec();
+fn targets(panel: &PanelState, marked: &[String], panel_cursor: Option<&str>) -> Vec<String> {
+    let real: Vec<String> = marked.iter().filter(|n| *n != "..").cloned().collect();
+    if !real.is_empty() {
+        return real;
     }
-    panel
-        .entries
-        .get(panel.cursor)
-        .map(|e| vec![e.name.clone()])
-        .unwrap_or_default()
+    match panel_cursor {
+        Some("..") => Vec::new(),
+        Some(name) => vec![name.to_string()],
+        None => panel
+            .entries
+            .get(panel.cursor)
+            .map(|e| vec![e.name.clone()])
+            .unwrap_or_default(),
+    }
+}
+
+fn reconcile(
+    cmd: &UnboundedSender<ApiCmd>,
+    side: Side,
+    panel: &PanelState,
+    marked: &[String],
+    panel_cursor: Option<&str>,
+) {
+    let idx_of = |n: &str| panel.entries.iter().position(|e| e.name == n);
+    let want: Vec<usize> = marked.iter().filter_map(|n| idx_of(n)).collect();
+    for i in &panel.selection {
+        if !want.contains(i) {
+            let _ = cmd.send(ApiCmd::FmToggleSelect { side, index: *i });
+        }
+    }
+    for i in &want {
+        if !panel.selection.contains(i) {
+            let _ = cmd.send(ApiCmd::FmToggleSelect { side, index: *i });
+        }
+    }
+    if let Some(i) = panel_cursor.and_then(idx_of) {
+        if i != panel.cursor {
+            let _ = cmd.send(ApiCmd::FmCursor { side, index: i });
+        }
+    }
+}
+
+fn arm_clipboard(
+    cmd: &UnboundedSender<ApiCmd>,
+    side: Side,
+    state: &Rc<RefCell<SideState>>,
+    kind: TransferKind,
+) {
+    let st = state.borrow();
+    if targets(&st.panel, &st.marked, st.cursor.as_deref()).is_empty() {
+        return;
+    }
+    reconcile(cmd, side, &st.panel, &st.marked, st.cursor.as_deref());
+    let _ = cmd.send(ApiCmd::FmClipboardSet { side, kind });
+}
+
+fn arm_fn(
+    cmd: &UnboundedSender<ApiCmd>,
+    side: Side,
+    state: &Rc<RefCell<SideState>>,
+) -> Rc<dyn Fn(TransferKind)> {
+    let cmd = cmd.clone();
+    let state = state.clone();
+    Rc::new(move |kind| arm_clipboard(&cmd, side, &state, kind))
 }
 
 fn run(
@@ -397,25 +517,7 @@ fn run(
         let st = state.borrow();
         (st.panel.clone(), st.marked.clone(), st.cursor.clone())
     };
-    let reconcile = || {
-        let idx_of = |n: &str| panel.entries.iter().position(|e| e.name == n);
-        let want: Vec<usize> = marked.iter().filter_map(|n| idx_of(n)).collect();
-        for i in &panel.selection {
-            if !want.contains(i) {
-                let _ = cmd.send(ApiCmd::FmToggleSelect { side, index: *i });
-            }
-        }
-        for i in &want {
-            if !panel.selection.contains(i) {
-                let _ = cmd.send(ApiCmd::FmToggleSelect { side, index: *i });
-            }
-        }
-        if let Some(i) = panel_cursor.as_deref().and_then(idx_of) {
-            if i != panel.cursor {
-                let _ = cmd.send(ApiCmd::FmCursor { side, index: i });
-            }
-        }
-    };
+    let reconcile = || reconcile(cmd, side, &panel, &marked, panel_cursor.as_deref());
     match action {
         FKey::View | FKey::Edit => {
             let entry = panel_cursor
@@ -441,7 +543,7 @@ fn run(
             crate::viewer::new_file(window, cmd.clone(), side, panel.cwd.clone());
         }
         FKey::Copy | FKey::Move => {
-            if targets(&panel, &marked).is_empty() {
+            if targets(&panel, &marked, panel_cursor.as_deref()).is_empty() {
                 return;
             }
             reconcile();
@@ -449,11 +551,18 @@ fn run(
                 Side::Left => Side::Right,
                 Side::Right => Side::Left,
             };
-            let _ = cmd.send(if action == FKey::Copy {
-                ApiCmd::FmCopy { side: dest }
+            let kind = if action == FKey::Copy {
+                TransferKind::Copy
             } else {
-                ApiCmd::FmMove { side: dest }
-            });
+                TransferKind::Move
+            };
+            crate::clipboard::start_transfer(
+                window.cloned(),
+                cmd.clone(),
+                dest,
+                TransferOrigin::OtherPane(kind),
+                None,
+            );
         }
         FKey::Mkdir => {
             let cmd = cmd.clone();
@@ -468,7 +577,7 @@ fn run(
             );
         }
         FKey::Rename => {
-            let names = targets(&panel, &marked);
+            let names = targets(&panel, &marked, panel_cursor.as_deref());
             let Some(old) = names.first().cloned() else {
                 return;
             };
@@ -484,7 +593,7 @@ fn run(
             );
         }
         FKey::Delete => {
-            let names = targets(&panel, &marked);
+            let names = targets(&panel, &marked, panel_cursor.as_deref());
             if names.is_empty() {
                 return;
             }
@@ -553,6 +662,8 @@ fn build_panel(
     cmd: UnboundedSender<ApiCmd>,
     config: client_config::AppConfig,
     state: Rc<RefCell<SideState>>,
+    clip: &crate::clipboard::ClipButtons,
+    window_of: Rc<dyn Fn() -> Option<gtk::Window>>,
 ) -> relm4::Controller<FmPanelModel> {
     FmPanelModel::builder()
         .launch(FmPanelInit {
@@ -561,10 +672,14 @@ fn build_panel(
             config,
             select_mask_enabled: false,
             thumbnailer: None,
-            toolbar_start_extras: Vec::new(),
+            toolbar_start_extras: vec![clip.widget.clone()],
             toolbar_end_extras: Vec::new(),
         })
         .connect_receiver(move |_input, output| {
+            if let FmPanelOutput::Clip { action, into } = output {
+                clip_action(side, action, into.clone(), &cmd, &state, window_of());
+                return;
+            }
             translate(side, output, &cmd, &state);
         })
 }
@@ -619,6 +734,29 @@ fn to_listing(side: Side, panel: &PanelState) -> FmPanelInput {
             connection_id: None,
         },
         select_name,
+    }
+}
+
+fn clip_action(
+    side: Side,
+    action: gtk_fm_ui::ClipAction,
+    into: Option<String>,
+    cmd: &UnboundedSender<ApiCmd>,
+    state: &Rc<RefCell<SideState>>,
+    window: Option<gtk::Window>,
+) {
+    match action {
+        gtk_fm_ui::ClipAction::Cut => arm_clipboard(cmd, side, state, TransferKind::Move),
+        gtk_fm_ui::ClipAction::Copy => arm_clipboard(cmd, side, state, TransferKind::Copy),
+        gtk_fm_ui::ClipAction::Paste => {
+            crate::clipboard::start_transfer(
+                window,
+                cmd.clone(),
+                side,
+                TransferOrigin::Clipboard,
+                into,
+            );
+        }
     }
 }
 
@@ -734,5 +872,59 @@ fn translate(
         }
         FmPanelOutput::Chmod { path, mode } => send(ApiCmd::FmChmod { side, path, mode }),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::targets;
+    use app_core::fm::{FileEntry, PanelState};
+
+    fn panel(names: &[&str], cursor: usize) -> PanelState {
+        PanelState {
+            entries: names
+                .iter()
+                .map(|n| FileEntry {
+                    name: (*n).to_string(),
+                    is_dir: false,
+                    size: 0,
+                    modified: 0,
+                    permissions: None,
+                })
+                .collect(),
+            cursor,
+            ..PanelState::default()
+        }
+    }
+
+    #[test]
+    fn highlighting_the_parent_link_selects_nothing() {
+        let p = panel(&["a.txt", "b.txt"], 1);
+        assert!(
+            targets(&p, &[], Some("..")).is_empty(),
+            "falling back to the core cursor here would act on b.txt, which the user \
+             never pointed at",
+        );
+    }
+
+    #[test]
+    fn the_parent_link_is_dropped_from_a_wider_selection() {
+        let p = panel(&["a.txt", "b.txt"], 0);
+        assert_eq!(
+            targets(&p, &["..".into(), "a.txt".into()], Some("..")),
+            vec!["a.txt"]
+        );
+    }
+
+    #[test]
+    fn the_panel_cursor_wins_over_the_cores_slower_one() {
+        let p = panel(&["a.txt", "b.txt"], 0);
+        assert_eq!(targets(&p, &[], Some("b.txt")), vec!["b.txt"]);
+    }
+
+    #[test]
+    fn without_a_panel_cursor_the_core_still_answers() {
+        let p = panel(&["a.txt", "b.txt"], 1);
+        assert_eq!(targets(&p, &[], None), vec!["b.txt"]);
     }
 }

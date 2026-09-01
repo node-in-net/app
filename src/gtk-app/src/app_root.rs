@@ -392,6 +392,16 @@ impl SimpleComponent for AppModel {
                             .ok();
                     }
                 }
+                Some("clipboard_changed") => {
+                    let view = serde_json::from_value::<Option<app_core::fm::ClipboardView>>(
+                        v["clipboard"].clone(),
+                    )
+                    .unwrap_or(None);
+                    self.workspace
+                        .sender()
+                        .send(WorkspaceInput::Clipboard(view))
+                        .ok();
+                }
                 Some("webvpn_changed") => {
                     if let Ok(state) =
                         serde_json::from_value::<app_core::webvpn::WebVpnState>(v["webvpn"].clone())

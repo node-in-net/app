@@ -42,7 +42,7 @@ fn build_graph(
         .orientation(gtk::Orientation::Vertical)
         .spacing(4)
         .margin_top(16)
-        .halign(gtk::Align::Start)
+        .hexpand(true)
         .build();
 
     let title_lbl = gtk::Label::builder()
@@ -53,7 +53,8 @@ fn build_graph(
 
     let graph = gtk::DrawingArea::builder()
         .height_request(150)
-        .width_request(640)
+        .width_request(240)
+        .hexpand(true)
         .build();
 
     container.append(&title_lbl);
@@ -388,7 +389,14 @@ impl SimpleComponent for SysInfoModel {
         content.append(&hardware_header);
         content.append(&grid);
         content.append(&graphs_container);
-        root.append(&content);
+
+        let scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .child(&content)
+            .build();
+        root.append(&scrolled);
 
         let model = SysInfoModel {
             show_toolbar: init.show_toolbar,

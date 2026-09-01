@@ -57,6 +57,7 @@ pub struct Shared {
     pub select_mask_enabled: Rc<Cell<bool>>,
     pub source: Rc<RefCell<SourceInfo>>,
     pub fill_cancelled: Rc<Cell<bool>>,
+    pub clipboard_held: Rc<Cell<usize>>,
 }
 
 #[derive(Clone)]
@@ -107,6 +108,7 @@ impl FmPanelInit {
 
 #[derive(Debug)]
 pub enum FmPanelInput {
+    ClipboardHeld(usize),
     Listing {
         path: String,
         entries: Vec<RemoteFileEntry>,
@@ -167,8 +169,19 @@ pub enum FmPanelInput {
     FilterChanged(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipAction {
+    Cut,
+    Copy,
+    Paste,
+}
+
 #[derive(Debug)]
 pub enum FmPanelOutput {
+    Clip {
+        action: ClipAction,
+        into: Option<String>,
+    },
     NavigateEnter(String),
     NavigateUp,
     NavigateLevel(usize),
@@ -648,6 +661,7 @@ impl SimpleComponent for FmPanelModel {
             select_mask_enabled: Rc::new(Cell::new(init.select_mask_enabled)),
             source: Rc::new(RefCell::new(SourceInfo::default())),
             fill_cancelled: Rc::new(Cell::new(false)),
+            clipboard_held: Rc::new(Cell::new(0)),
         };
 
         let with_default_toolbar = init.show_toolbar;
@@ -914,9 +928,6 @@ impl SimpleComponent for FmPanelModel {
             .margin_top(8)
             .margin_bottom(8)
             .build();
-        if with_default_toolbar {
-            header.pack_start(&btn_webdav_sep);
-        }
         let btn_webdav = mk_icon_btn(
             "/com/fm-ui/gtk/netdrive.svg",
             crate::i18n::tr("fm.mount_webdav").to_string(),
@@ -934,9 +945,6 @@ impl SimpleComponent for FmPanelModel {
                     let _ = sender.output(FmPanelOutput::Mount);
                 });
             });
-        }
-        if with_default_toolbar {
-            header.pack_start(&btn_webdav);
         }
 
         let view_switcher = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -1004,6 +1012,10 @@ impl SimpleComponent for FmPanelModel {
         }
         for w in &init.toolbar_start_extras {
             header.pack_start(w);
+        }
+        if with_default_toolbar {
+            header.pack_start(&btn_webdav_sep);
+            header.pack_start(&btn_webdav);
         }
         for w in &init.toolbar_end_extras {
             header.pack_end(w);
@@ -1447,6 +1459,21 @@ impl SimpleComponent for FmPanelModel {
             });
         }
 
+        {
+            let sender = sender.clone();
+            let shared_c = shared.clone();
+            let gesture = gtk::GestureClick::builder().button(3).build();
+            gesture.connect_pressed(move |g, _, x, y| {
+                let popover = crate::context_menu::create_empty_space_menu(&shared_c, &sender);
+                if let Some(widget) = g.widget() {
+                    popover.set_parent(&widget);
+                    popover
+                        .set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                    popover.popup();
+                }
+            });
+            stack.add_controller(gesture);
+        }
         content_box.append(&stack);
         content_box.append(&filter_bar);
         content_box.append(&select_bar);
@@ -1566,6 +1593,9 @@ impl SimpleComponent for FmPanelModel {
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>) {
         match message {
+            FmPanelInput::ClipboardHeld(n) => {
+                self.shared.clipboard_held.set(n);
+            }
             FmPanelInput::AddAddressEndWidget(widget) => {
                 self.address_row.append(&widget);
             }

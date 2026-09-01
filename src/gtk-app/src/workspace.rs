@@ -54,6 +54,7 @@ pub enum WorkspaceInput {
     WebVpn(Box<app_core::webvpn::WebVpnState>),
     Tunnels(app_net::TunnelTotals, Vec<app_net::LaunchedApp>),
     Panel(Side, Box<PanelState>),
+    Clipboard(Option<app_core::fm::ClipboardView>),
     Desktop(Box<DesktopState>),
     Registry {
         path: String,
@@ -79,7 +80,9 @@ pub struct WorkspaceModel {
     online_pill: gtk::Label,
     search: gtk::SearchEntry,
     device_tabs: gtk::Box,
+    device_bar: gtk::Box,
     tabs: gtk::Box,
+    service_bar: gtk::Box,
     content: gtk::Stack,
     deps_banner: adw::Banner,
     terminal: relm4::Controller<TerminalModel>,
@@ -187,6 +190,13 @@ fn apply_filter(list: &gtk::ListBox, needle: &str) {
         row.set_visible(visible);
         index += 1;
     }
+}
+
+fn bar_with_rule(row: &gtk::Box) -> gtk::Box {
+    let bar = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    bar.append(row);
+    bar.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    bar
 }
 
 fn offline_placeholder() -> gtk::Widget {
@@ -431,11 +441,7 @@ impl WorkspaceModel {
             let active = snap.selected.as_deref() == Some(id.as_str());
             self.device_tabs.append(&self.device_tab(dev, active));
         }
-        if snap.open_tabs.is_empty() {
-            let hint = gtk::Label::new(Some(&i18n::tr("workspace.pick_device")));
-            hint.add_css_class("device-sub");
-            self.device_tabs.append(&hint);
-        }
+        self.device_bar.set_visible(!snap.open_tabs.is_empty());
 
         while let Some(child) = self.tabs.first_child() {
             self.tabs.remove(&child);
@@ -465,6 +471,8 @@ impl WorkspaceModel {
                 self.tabs.append(&tab);
             }
         }
+        self.service_bar
+            .set_visible(self.tabs.first_child().is_some());
 
         let session = Session {
             device: selected.map(|d| d.id.clone()),
@@ -753,16 +761,16 @@ impl SimpleComponent for WorkspaceModel {
         device_tabs.set_margin_bottom(8);
         device_tabs.set_margin_start(14);
         device_tabs.set_margin_end(14);
-        ws.append(&device_tabs);
-        ws.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let device_bar = bar_with_rule(&device_tabs);
+        ws.append(&device_bar);
 
         let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         tabs.set_margin_top(8);
         tabs.set_margin_start(14);
         tabs.set_margin_end(14);
         tabs.set_margin_bottom(8);
-        ws.append(&tabs);
-        ws.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let service_bar = bar_with_rule(&tabs);
+        ws.append(&service_bar);
 
         let terminal = build_terminal(cmd.clone(), config.clone());
         let network = build_network(cmd.clone(), config.clone());
@@ -897,7 +905,9 @@ impl SimpleComponent for WorkspaceModel {
             online_pill,
             search,
             device_tabs,
+            device_bar,
             tabs,
+            service_bar,
             content,
             deps_banner,
             terminal,
@@ -966,6 +976,7 @@ impl SimpleComponent for WorkspaceModel {
                 });
             }
             WorkspaceInput::Panel(side, panel) => self.files.apply(side, *panel),
+            WorkspaceInput::Clipboard(view) => self.files.set_clipboard(view.as_ref()),
             WorkspaceInput::Desktop(state) => self.apply_desktop(&state),
             WorkspaceInput::Registry {
                 path,

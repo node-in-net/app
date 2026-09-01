@@ -176,3 +176,117 @@ fn fm_over_rest_drives_the_real_disk() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_marked_group_survives_cut_and_paste_across_panes() {
+    let dir = std::env::temp_dir().join(format!("app-headless-clip-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("from")).unwrap();
+    std::fs::create_dir_all(dir.join("to")).unwrap();
+    for n in ["one.txt", "two.txt", "three.txt"] {
+        std::fs::write(dir.join("from").join(n), n.as_bytes()).unwrap();
+    }
+    std::fs::write(dir.join("to/two.txt"), b"already here").unwrap();
+    let from = dir.join("from");
+    let to = dir.join("to");
+
+    let h = app_headless::start(move || {
+        let mut app = App::new();
+        for (side, path, label) in [
+            (Side::Left, from.clone(), "From"),
+            (Side::Right, to.clone(), "To"),
+        ] {
+            app.fm.set_resources(
+                side,
+                vec![(
+                    ResourceTab {
+                        id: label.to_lowercase(),
+                        label: label.into(),
+                    },
+                    Rc::new(LocalFsRpc::new(path)) as Rc<dyn FileSystemRpc>,
+                )],
+            );
+        }
+        app
+    });
+    let base = format!("http://127.0.0.1:{}", h.port);
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/api/events", h.port))
+                .await
+                .expect("connect events ws");
+        let http = reqwest::Client::new();
+        let post = |path: &str, body: Value| {
+            let http = http.clone();
+            let path = path.to_string();
+            let url = format!("{base}{path}");
+            async move {
+                let r = http.post(url).json(&body).send().await.expect("post");
+                assert!(r.status().is_success(), "POST {path} -> {}", r.status());
+            }
+        };
+
+        for side in ["left", "right"] {
+            post(
+                &format!("/api/panel/{side}/resource"),
+                json!({ "index": 0 }),
+            )
+            .await;
+        }
+        wait_event(&mut ws, "right listing", |v| {
+            v["event"] == "panel_updated" && v["side"] == "right" && !panel_names(v).is_empty()
+        })
+        .await;
+
+        for index in [0, 1, 2] {
+            post("/api/panel/left/select", json!({ "index": index })).await;
+        }
+        post("/api/panel/left/clipboard_cut", json!({})).await;
+        let ev = wait_event(&mut ws, "clipboard", |v| v["event"] == "clipboard_changed").await;
+        assert_eq!(
+            ev["clipboard"]["count"], 3,
+            "all three marks reached the clipboard, not just the cursor entry"
+        );
+        assert_eq!(ev["clipboard"]["kind"], "move");
+        assert_eq!(
+            ev["clipboard"]["side"], "left",
+            "the badge needs to know which pane it was taken from"
+        );
+
+        post(
+            "/api/panel/right/paste",
+            json!({ "resolutions": [["two.txt", "keep_both"]] }),
+        )
+        .await;
+        wait_event(&mut ws, "emptied clipboard", |v| {
+            v["event"] == "clipboard_changed" && v["clipboard"].is_null()
+        })
+        .await;
+
+        let landed = wait_event(&mut ws, "right relisted", |v| {
+            v["event"] == "panel_updated"
+                && v["side"] == "right"
+                && panel_names(v).contains(&"one.txt".to_string())
+        })
+        .await;
+        let names = panel_names(&landed);
+        assert!(names.contains(&"three.txt".to_string()), "got {names:?}");
+        assert!(
+            names.contains(&"two (2).txt".to_string()),
+            "keep-both renamed the clash instead of overwriting it; got {names:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("to/two.txt")).unwrap(),
+            "already here",
+            "the file that was already there is untouched",
+        );
+        assert!(
+            !dir.join("from/one.txt").exists(),
+            "a cut leaves nothing behind",
+        );
+    });
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
