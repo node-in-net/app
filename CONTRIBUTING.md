@@ -51,7 +51,28 @@ same terms as the project — **MIT OR Apache-2.0**, at the user's option. See
 [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
 
 The name "node.in.net" and the project logo are not covered by the code
-license.
+license. Neither are the interface icons: they come from
+[Icons8](https://icons8.com) under a license the author purchased, which covers
+the releases published here and is not passed on by the source being public. A
+fork credits Icons8 or replaces the artwork.
+
+Everything the application ships is listed in
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md); regenerate it with
+`npm run licenses` when you change dependencies. The allow-list in `about.toml`
+is permissive, plus MPL-2.0 for three crates whose file-level copyleft binds only
+their own files, so a new dependency under GPL, LGPL or AGPL fails the run rather
+than changing what this project may be licensed as.
+
+Note on binaries: the remote desktop path uses OpenH264 (BSD-2-Clause) built from
+vendored source, not x264 or x265, and the two GPL libraries the GTK stack drags in
+are replaced by our own MIT stubs — `liblzo2` via the cairo script interpreter
+(`src/fakelzo/`) and `libjbig` via libtiff's JBIG codec (`src/fakejbig/`).
+
+The release bundles carry no GPL code. `builder/check-bundle-licenses.sh` verifies that
+against the shipped binaries — run it before changing the claim either way, because it
+has been got wrong in both directions. It reports one known hit, gdk-pixbuf's ICNS
+loader, which declares `"GPL"` in a metadata field while its own source header is
+LGPL-2.0-or-later; THIRD-PARTY-LICENSES.md links both lines.
 
 ## Getting the source
 

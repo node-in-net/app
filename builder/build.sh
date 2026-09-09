@@ -245,7 +245,7 @@ pkgrel=1
 pkgdesc="Node In Net $APP"
 arch=('x86_64')
 url="https://node.in.net"
-license=('MIT')
+license=('MIT' 'Apache-2.0')
 depends=('gtk4' 'libadwaita')
 source=()
 sha256sums=()
@@ -263,6 +263,9 @@ package() {
     elif [ -f "/home/builder/workdir/src/gtk-app/assets/icon-512.png" ]; then
         install -Dm644 "/home/builder/workdir/src/gtk-app/assets/icon-512.png" "\$pkgdir/usr/share/icons/hicolor/512x512/apps/${DESKTOP_FILE%.desktop}.png"
     fi
+    install -Dm644 "/home/builder/workdir/LICENSE-MIT" "\$pkgdir/usr/share/licenses/$CARGO_PKG/LICENSE-MIT"
+    install -Dm644 "/home/builder/workdir/LICENSE-APACHE" "\$pkgdir/usr/share/licenses/$CARGO_PKG/LICENSE-APACHE"
+    install -Dm644 "/home/builder/workdir/THIRD-PARTY-LICENSES.md" "\$pkgdir/usr/share/licenses/$CARGO_PKG/THIRD-PARTY-LICENSES.md"
 }
 EOF
         log_info "Compiling Arch Linux Package..."
@@ -297,6 +300,15 @@ EOF
             --manifest-path "$WORKDIR/$APP_DIR/Cargo.toml" \
             --target x86_64-pc-windows-gnu
             
+        log_info "Building fakelzo (GPL-clean liblzo2 replacement)..."
+        "$WORKDIR/src/fakelzo/build-windows.sh"
+
+        log_info "Building fakejbig (GPL-clean libjbig replacement)..."
+        "$WORKDIR/src/fakejbig/build-windows.sh"
+
+        log_info "Checking the bundle for GPL code..."
+        "$WORKDIR/builder/check-bundle-licenses.sh" || true
+
         log_info "Compiling 64-bit Windows Installer with NSIS natively..."
         mkdir -p "$WORKDIR/distr"
         makensis "$WORKDIR/$APP_DIR/setup.nsi"
@@ -384,6 +396,29 @@ EOF
             log_warning "dylibbundler not found. Skipping library bundling."
         fi
         
+        # After dylibbundler, before codesign. Glob: a soname bump must not slip past.
+        LZO_REPLACED=0
+        for lzo in "$APP_BUNDLE_PATH/Contents/Libs/"liblzo2*.dylib; do
+            [ -f "$lzo" ] || continue
+            log_info "Replacing $(basename "$lzo") with fakelzo (GPL-clean stand-in)..."
+            "$WORKDIR/src/fakelzo/build-macos.sh" "$lzo"
+            LZO_REPLACED=$((LZO_REPLACED + 1))
+        done
+        if [ "$LZO_REPLACED" -eq 0 ]; then
+            log_info "liblzo2 not present in the bundle — nothing to replace"
+        fi
+
+        # Homebrew's libtiff has no jbigkit, so this normally finds nothing.
+        for jbig in "$APP_BUNDLE_PATH/Contents/Libs/"libjbig*.dylib; do
+            [ -f "$jbig" ] || continue
+            log_info "Replacing $(basename "$jbig") with fakejbig (GPL-clean stand-in)..."
+            "$WORKDIR/src/fakejbig/build-macos.sh" "$jbig"
+        done
+
+        mkdir -p "$APP_BUNDLE_PATH/Contents/Resources/licenses"
+        cp "$WORKDIR/assets/licenses/"*.txt "$APP_BUNDLE_PATH/Contents/Resources/licenses/"
+        cp "$WORKDIR/THIRD-PARTY-LICENSES.md" "$APP_BUNDLE_PATH/Contents/Resources/licenses/"
+
         log_info "Codesigning application bundle..."
         codesign --force --deep --sign - "$APP_BUNDLE_PATH" || log_warning "Codesigning failed, continuing"
         

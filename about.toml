@@ -1,0 +1,78 @@
+# cargo-about configuration — generates THIRD-PARTY-LICENSES.md.
+#
+#   cargo about generate --config about.toml about.hbs -o THIRD-PARTY-LICENSES.md
+#
+# `accepted` is the allow-list: a crate offering several licenses gets the
+# first match from this list, and an unlisted license fails the run. That is
+# the point — a new dependency under GPL/AGPL breaks the build instead of
+# quietly changing what the project may be licensed as.
+#
+# The list is permissive, plus MPL-2.0 for three crates whose file-level copyleft
+# binds only their own files. No Rust dependency in this workspace needs LGPL or
+# anything stronger, and none should start to without someone noticing.
+
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "OpenSSL",
+    # File-level copyleft only (colored, option-ext, webpki-roots). It binds
+    # those crates' own files, not this project's code.
+    "MPL-2.0",
+]
+
+# One core, six shipping shapes: the GTK desktop application, the console node,
+# the Windows installer, the macOS bundle, the Android library and the browser
+# client. The list decides which platform-only dependencies show up.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "aarch64-linux-android",
+    "wasm32-unknown-unknown",
+]
+
+# Build scripts and test-only crates ship no code to users.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Drops workspace crates that carry `publish = false`; they are this project, not
+# third-party code. The binaries and libraries that do not set it — nodeinnet-gtk,
+# console-app, app-core, app-headless, app-net, android-node, wasm-node — still
+# appear, so each of them declares `license = "MIT OR Apache-2.0"` and shows up
+# with that rather than as Unknown.
+private = { ignore = true }
+
+# ── Clarifications ────────────────────────────────────────────────────────
+# Crates whose license cannot be matched automatically: no `license` field, or
+# a LICENSE file that is not a verbatim copy of a standard text.
+
+# ring ships a single LICENSE file combining several upstream notices, so its
+# expression is an AND — every part has to be accepted explicitly.
+[ring]
+accepted = ["ISC", "MIT", "OpenSSL", "OpenSSL-standalone", "SSLeay-standalone"]
+
+[display-info.clarify]
+license = "Apache-2.0"
+files = [{ path = "LICENSE", license = "Apache-2.0", checksum = "1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6" }]
+
+# The Rust wrapper is MIT (Jakobzs). The MinHook C sources it vendors are
+# BSD-2-Clause; both are reproduced in the crate's LICENSE files.
+[minhook.clarify]
+license = "MIT"
+files = [{ path = "LICENSE", license = "MIT", checksum = "30797b652bcff962c31afd232df797d75c5572e35138c38717f2a071e6d411a9" }]
+
+[webpki.clarify]
+license = "ISC"
+files = [{ path = "LICENSE", license = "ISC", checksum = "5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a" }]

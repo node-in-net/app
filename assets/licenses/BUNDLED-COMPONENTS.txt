@@ -1,0 +1,215 @@
+node.in.net — bundled third-party components
+============================================
+
+node.in.net itself is licensed under MIT OR Apache-2.0; see LICENSE-MIT.txt and
+LICENSE-APACHE-2.0.txt in this directory.
+
+This file lists the third-party libraries shipped alongside the application and where the
+corresponding source for each can be obtained, so that the LGPL requirements on source
+availability are met. Versions are given where they could be read out of the shipped
+binaries; the "Supporting libraries" section at the end is a group listing rather than a
+per-file inventory.
+
+Linux packages (.deb / .rpm / Arch) bundle nothing — GTK, GStreamer, OpenSSL, the imaging
+stack and the rest are declared as dependencies and come from the distribution. Only the
+Windows and macOS bundles contain the components below.
+
+Versions are those read out of the binaries in artifacts/gtk4-win32-x64/, which are the
+MSYS2 mingw-w64 builds. The macOS bundle uses the Homebrew formulae current at build time,
+so its versions differ; the licenses do not.
+
+
+GTK stack — LGPL-2.1-or-later                                       Windows, macOS
+    Shipped as separate shared libraries, so they can be replaced by the user, which is
+    what LGPL section 6 requires.
+
+    GTK              4.20.3    https://gitlab.gnome.org/GNOME/gtk
+    GLib / GIO       2.86.3    https://gitlab.gnome.org/GNOME/glib
+    libadwaita       1.8.2     https://gitlab.gnome.org/GNOME/libadwaita
+    Pango            1.56.4    https://gitlab.gnome.org/GNOME/pango
+                               (upstream is LGPL-2.0-or-later, which 2.1 satisfies)
+    gdk-pixbuf       2.44.4    https://gitlab.gnome.org/GNOME/gdk-pixbuf
+    librsvg          2.61.3    https://gitlab.gnome.org/GNOME/librsvg
+                               (written in Rust, not C, but shipped and licensed the same)
+
+    On Windows these are the MSYS2 mingw-w64 builds:
+    https://packages.msys2.org/         — search for mingw-w64-x86_64-<name>
+
+    License:  LGPL-2.1.txt
+
+
+cairo — LGPL-2.1-only OR MPL-1.1, used under LGPL-2.1                Windows, macOS
+    Version:  1.18.4
+    Source:   https://gitlab.freedesktop.org/cairo/cairo
+    License:  LGPL-2.1.txt
+
+    Listed separately from the GTK stack because its terms differ: LGPL-2.1 *only*, with
+    the Mozilla Public License 1.1 as an alternative we do not take.
+
+
+GStreamer — LGPL-2.1-or-later                                       Windows
+    Version:  1.26.9
+    Source:   https://gitlab.freedesktop.org/gstreamer/gstreamer
+    License:  LGPL-2.1.txt
+
+    Present in the Windows bundle because GTK's media backend links it, NOT because this
+    application uses it there — screen capture on Windows goes through windows-capture, and
+    on macOS through ScreenCaptureKit. GStreamer is this project's capture path on Linux
+    only, where it is a distribution dependency and is not bundled.
+
+    The eleven libraries carried on Windows are the core plus allocators, audio, base,
+    d3d12, d3dshader, gl, pbutils, play, tag and video.
+
+
+OpenH264 — BSD-2-Clause                                             Windows, macOS, Linux
+    Source:   https://github.com/cisco/openh264
+
+    The remote desktop codec, reached through the `openh264` / `openh264-sys2` crates. Those
+    crates vendor the upstream C++ sources and compile them, so what ships is OpenH264 built
+    from source and linked statically into the application binary. No Cisco-distributed
+    binary is downloaded, so Cisco's separate binary-distribution terms do not apply.
+
+    Encoding and decoding both go through this. No x264 or x265 is present anywhere.
+
+
+OpenSSL — Apache-2.0                                                Windows
+    Version:  3.6.0
+    Source:   https://github.com/openssl/openssl
+    License:  LICENSE-APACHE-2.0.txt
+
+
+libtiff — libtiff license (BSD-like)                                Windows
+    Version:  4.7.1
+    Source:   https://gitlab.com/libtiff/libtiff
+
+    A load-time dependency of gdk-pixbuf in the MSYS2 build, which compiles TIFF support in
+    rather than shipping it as a loadable module. This project never asks for TIFF; the
+    ability to display it is a side effect of using GTK.
+
+
+Dual-licensed components, and the arm this project elects            Windows, macOS
+    Each of these offers a GPL alternative we do NOT take. A fork inherits the same choice
+    only if it makes it deliberately, so the election is recorded here.
+
+    FreeType         FTL  OR  GPL-2.0-or-later            -> FTL
+                     https://gitlab.freedesktop.org/freetype/freetype
+                     The FTL requires credit in the documentation; this file is that credit.
+
+    zstd             BSD-3-Clause  OR  GPL-2.0-only       -> BSD-3-Clause
+                     https://github.com/facebook/zstd
+                     Both as libzstd.dll and as the sources vendored by the zstd-sys crate.
+
+    graphite2        LGPL-2.1-or-later OR MPL-1.1 OR GPL-2.0-or-later  -> LGPL-2.1-or-later
+                     https://github.com/silnrsi/graphite
+                     License:  LGPL-2.1.txt
+
+    libidn2          LGPL-3.0-or-later  OR  GPL-2.0-or-later  -> LGPL-3.0-or-later
+                     https://gitlab.com/libidn/libidn2
+                     License:  LGPL-3.0.txt
+
+    libunistring     LGPL-3.0-or-later  OR  GPL-2.0-or-later  -> LGPL-3.0-or-later
+                     https://savannah.gnu.org/projects/libunistring/
+                     License:  LGPL-3.0.txt
+
+    GPL-3.0.txt ships alongside LGPL-3.0.txt because the LGPL-3.0 is written as a set of
+    additional permissions on top of the GPL-3.0 and incorporates it by reference. Its
+    presence is not an indication that any GPL-3.0 component is bundled.
+
+
+GCC runtime — GPL-3.0-or-later WITH GCC Runtime Library Exception   Windows, macOS
+    libstdc++-6.dll and libgcc_s_seh-1.dll, from GCC 15.2.0.
+    Source:   https://gcc.gnu.org/
+
+    The Runtime Library Exception is what makes these usable here: it removes the copyleft
+    requirement for programs compiled with GCC, so shipping them imposes nothing on this
+    project's own code. Listed because a scan by licence family will flag them as GPL-3.
+
+
+gettext runtime (libintl-8.dll) — LGPL-2.1-or-later                 Windows
+    Source:   https://savannah.gnu.org/projects/gettext/
+    License:  LGPL-2.1.txt
+
+    The gettext package as a whole is GPL-3.0-or-later, but that covers the TOOLS
+    (msgfmt, xgettext). The libintl runtime library shipped here is LGPL-2.1-or-later.
+
+
+libssh2 — BSD-3-Clause                                              Windows
+    Version:  1.11.1
+    Source:   https://github.com/libssh2/libssh2
+
+
+libcurl — curl license (MIT-like)                                   Windows
+    Version:  8.17.0
+    Source:   https://github.com/curl/curl
+
+
+fakelzo (in place of lzo2) — MIT                                    Windows, macOS
+    Source:   src/fakelzo/ in this repository, with build scripts for both platforms
+
+    The file named liblzo2-2.dll (Windows) / liblzo2.2.dylib (macOS) in these bundles is
+    NOT LZO. The real liblzo2 is GPL-2.0-or-later and arrives only because GTK links the
+    cairo script interpreter, which imports two symbols from it. Rather than ship someone
+    else's GPL code for a path the application never drives, the bundles carry our own
+    MIT-licensed source exporting exactly those two symbols (lzo2a_decompress,
+    lzo2a_999_compress), which report failure instead of compressing. No LZO code was used
+    or consulted.
+
+    Verified by measurement: an instrumented stand-in preloaded ahead of the real library
+    logged zero calls across the full headless suite, which scored 65/65 either way.
+
+    The consequence is that cairo-script serialisation does not work in these builds.
+    Nothing the application offers uses it.
+
+
+fakejbig (in place of libjbig) — MIT                                Windows
+    Source:   src/fakejbig/ in this repository
+
+    The file named libjbig-0.dll in the Windows bundle is NOT JBIG-KIT. The real libjbig is
+    GPL-2.0-or-later (JBIG-KIT 2.1, Markus Kuhn) and arrives only because libtiff imports
+    ten symbols from it for one purpose: TIFF files whose Compression tag is JBIG. Since
+    both libtiff and libjbig are hard load-time imports, neither could be dropped, so the
+    bundle carries our own MIT-licensed source exporting those ten entry points, which
+    report failure instead of decoding. No JBIG-KIT code was used or consulted.
+
+    Verified by measurement: eight TIFFs covering raw, LZW, Deflate, PackBits, JPEG and the
+    three CCITT bi-level variants loaded identically with and without the stand-in, and no
+    jbg_* function was called.
+
+    The consequence is that a genuinely JBIG-compressed TIFF fails to open. Effectively
+    nothing produces those.
+
+
+gdk-pixbuf's macOS-icon loader — LGPL, despite the string saying "GPL"   Windows
+    Not a separate file: part of libgdk_pixbuf-2.0-0.dll. Noted here because every licence
+    scanner finds it.
+
+    The library reports "GPL" for that one format and "LGPL" for the other fourteen. The
+    licence is LGPL, stated in the header of the source file itself, unchanged since the
+    file was added in 2007:
+
+      "This library is free software; you can redistribute it and/or modify it under the
+       terms of the GNU Lesser General Public License ... version 2 of the License, or
+       (at your option) any later version."
+
+      https://gitlab.gnome.org/GNOME/gdk-pixbuf/-/blob/2.44.4/gdk-pixbuf/io-icns.c#L6-17
+
+    The "GPL" on line 521 of that same file fills a display field returned by
+    gdk_pixbuf_format_get_license(). It contradicts the file's own header, gdk-pixbuf's
+    COPYING (LGPL-2.1) and Debian's copyright file, which puts GPL-2+ only on tests/* and
+    thumbnailer/*. An upstream typo, not a licence.
+
+      https://gitlab.gnome.org/GNOME/gdk-pixbuf/-/blob/2.44.4/gdk-pixbuf/io-icns.c#L521
+
+
+Supporting libraries
+    The GTK stack pulls in the usual imaging, text and compression libraries — zlib, libpng,
+    libjpeg, libwebp, fontconfig, harfbuzz, fribidi, pixman, expat, libxml2, libxmlb,
+    libappstream, libthai, libdatrie, libiconv, brotli, xz, bzip2, pcre2, libpsl, nghttp2 and
+    others. All are permissive (MIT, BSD, zlib) or LGPL; the ones that also offer a GPL arm
+    are listed under "Dual-licensed components" above, and the GCC runtime under its own
+    heading. Per-file versions are those of the MSYS2 mingw-w64 packages current at build
+    time; the source for each is at https://packages.msys2.org/.
+
+    This grouping is a summary, not a per-file audit. builder/check-bundle-licenses.sh scans
+    every shipped library for GPL declarations, including ones compiled inside an otherwise
+    permissive library — which is how the gdk-pixbuf ICNS string above was found.

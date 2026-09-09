@@ -2,6 +2,8 @@
 name = "console-app"
 version = "0.5.513"
 edition = "2024"
+description = "node.in.net headless node for servers."
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 app-version = { workspace = true }

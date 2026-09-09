@@ -159,6 +159,11 @@ cargo build --release --target x86_64-pc-windows-gnu \
     --manifest-path src/node-network/Cargo.toml
 cargo build --release --target x86_64-pc-windows-gnu \
     --manifest-path src/gtk-app/Cargo.toml
+
+# setup.nsi packs these in place of the GPL liblzo2 and libjbig — see their READMEs.
+./src/fakelzo/build-windows.sh
+./src/fakejbig/build-windows.sh
+
 makensis src/gtk-app/setup.nsi
 ```
 
@@ -210,3 +215,32 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Licensed under either of [Apache License 2.0](LICENSE-APACHE) or
 [MIT license](LICENSE-MIT) at your option.
+
+Everything else that ships with the application — the Rust crates, the native
+libraries and the artwork — is listed in
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md). Regenerate it after changing
+dependencies:
+
+```sh
+npm run licenses
+```
+
+Two things there are worth reading before you fork. The interface icons come
+from [Icons8](https://icons8.com) under a license the author purchased, and that
+purchase does not travel with the code — a fork credits Icons8 or replaces the
+artwork. The product name and the logo are likewise not covered by the code
+license.
+
+The remote desktop path uses OpenH264 (BSD-2-Clause) built from vendored source, not
+x264 or x265. Two GPL libraries the GTK stack drags in are replaced by our own MIT
+stubs: `liblzo2`, reached through the cairo script interpreter
+([`src/fakelzo/`](src/fakelzo/), Windows and macOS), and `libjbig`, reached through
+libtiff's JBIG codec ([`src/fakejbig/`](src/fakejbig/), Windows). Neither code path is
+ever taken, and both READMEs record the measurement that shows it.
+
+**No GPL code ships on any platform.** One string in `libgdk_pixbuf-2.0-0.dll` says
+otherwise — its ICNS loader reports `"GPL"` — but that is an upstream metadata bug:
+the same file, `io-icns.c`, is licensed LGPL-2.0-or-later in its own header. See
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md), which links both lines.
+`builder/check-bundle-licenses.sh` scans the shipped binaries on every Windows build,
+so this is a check rather than a claim.

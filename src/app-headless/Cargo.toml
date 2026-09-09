@@ -2,6 +2,7 @@
 name = "app-headless"
 version = "0.5.513"
 edition = "2021"
+license = "MIT OR Apache-2.0"
 description = "Headless REST/WS driver over app-core — the remake runs it with --headless; world-A component tests drive it (specs/19 §3-§4)."
 
 [dependencies]

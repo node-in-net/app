@@ -46,7 +46,15 @@ Section "NodeInNet (Required)" SecMain
     File "..\..\bin\distr\exe\target\x86_64-pc-windows-gnu\release\nodeinnet-gtk.exe"
     File "..\..\bin\distr\exe\target\x86_64-pc-windows-gnu\release\node_network.dll"
 
-    File /r "..\..\artifacts\gtk4-win32-x64\*"
+    ; Wildcards, not exact names: an MSYS2 soname bump must not slip a GPL DLL back in.
+    File /r /x liblzo2*.dll /x libjbig*.dll "..\..\artifacts\gtk4-win32-x64\*"
+    File "..\..\bin\distr\fakelzo\liblzo2-2.dll"
+    File "..\..\bin\distr\fakejbig\libjbig-0.dll"
+
+    SetOutPath "$INSTDIR\licenses"
+    File "..\..\assets\licenses\*.txt"
+    File "..\..\THIRD-PARTY-LICENSES.md"
+    SetOutPath "$INSTDIR"
 
     CreateDirectory "$SMPROGRAMS\NodeInNet"
     CreateShortcut "$SMPROGRAMS\NodeInNet\NodeInNet.lnk" "$INSTDIR\nodeinnet-gtk.exe" "" "$INSTDIR\nodeinnet-gtk.exe" 0

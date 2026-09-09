@@ -1,0 +1,168 @@
+# Third-party licenses
+
+node.in.net itself is licensed under **MIT OR Apache-2.0** (see
+[LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)). This file
+lists everything else that ships with it.
+
+The Rust section below is generated — do not edit it by hand:
+
+```sh
+cargo about generate --config about.toml about.hbs -o THIRD-PARTY-LICENSES.md
+```
+
+## Bundled native libraries
+
+These are native libraries the application links, directly or through the GTK
+stack. They are not Rust crates, so they are not covered by the generated section
+— this list is maintained by hand.
+
+| Library | License | Where | Linking |
+| --- | --- | --- | --- |
+| GTK 4, libadwaita, GLib, Pango, gdk-pixbuf, librsvg | LGPL-2.1-or-later | desktop, all platforms | dynamic |
+| cairo | LGPL-2.1-only OR MPL-1.1 (used under LGPL-2.1) | desktop, all platforms | dynamic |
+| GStreamer | LGPL-2.1-or-later | Linux: screen capture, taken from the system. Windows: bundled with GTK, not driven by this application | dynamic |
+| libtiff | libtiff license (BSD-like) | Windows bundle | dynamic |
+| libidn2 | LGPL-3.0-or-later OR GPL-2.0-or-later (used under LGPL-3.0) | Windows bundle | dynamic |
+| PipeWire (screen capture) | MIT | Linux | dynamic |
+| windows-capture / ScreenCaptureKit | screen capture on Windows / macOS | Windows, macOS | dynamic |
+| OpenH264 (remote desktop codec) | BSD-2-Clause | all platforms | static, built from vendored source |
+| OpenSSL 3.x | Apache-2.0 | where system TLS is used | dynamic |
+| libdbus | AFL-2.1 OR GPL-2.0-or-later (used under AFL-2.1) | Linux | dynamic |
+| MinHook | BSD-2-Clause | Windows | static |
+| fakelzo (our stand-in for lzo2) | MIT | Windows, macOS | dynamic |
+| fakejbig (our stand-in for libjbig) | MIT | Windows | dynamic |
+
+**LGPL components** are linked dynamically and shipped as separate shared
+libraries, so they may be replaced by the user. On Linux none of them is shipped:
+the `deb`, `rpm` and `zst` packages declare `libgtk-4-1` / `libadwaita-1-0` (and
+their equivalents) as dependencies, and everything those pull in — GStreamer,
+PipeWire, the imaging stack — comes from the distribution too. The Windows
+installer bundles the MSYS2 GTK 4 runtime, and the macOS bundle carries the copies
+`dylibbundler` collects.
+
+**The remote desktop codec is OpenH264**, Cisco's BSD-2-Clause implementation,
+used by `client-core` behind the `feature-rdesk` feature
+([`submodules/p2p-common/client-core/src/rtc/mod.rs`](submodules/p2p-common/client-core/src/rtc/mod.rs)).
+Nothing here uses x264 or x265, so no GPL encoder is involved. The pinned
+`openh264-sys2` vendors the upstream C++ sources and compiles them, so the shipped
+codec is BSD-2-Clause OpenH264 built from source and linked statically — no Cisco
+binary is downloaded, and none of Cisco's separate binary-distribution terms apply.
+
+**`liblzo2` no longer ships.** It is GPL-2.0-or-later (Markus F.X.J. Oberhumer) and was never
+something the application asked for — GTK links it through the cairo script interpreter
+(`libgtk-4-1 → libcairo-script-interpreter-2 → liblzo2-2`), a debugging facility nothing
+here drives.
+
+It is replaced on both desktop platforms by [`src/fakelzo/`](src/fakelzo/), our own
+MIT-licensed stand-in exporting the only two symbols the interpreter imports
+(`lzo2a_decompress`, `lzo2a_999_compress`), which report failure instead of compressing.
+No LZO code was used or consulted; only the two function signatures are shared.
+
+On Windows the real DLL is excluded from the installer archive rather than overwritten after
+install ([`src/gtk-app/setup.nsi`](src/gtk-app/setup.nsi)), because packing it would be
+distribution regardless of which copy wins on disk; on macOS the replacement happens in
+`builder/build.sh` after `dylibbundler` and before signing. Linux links nothing of the sort —
+GTK comes from the distribution.
+
+That the code path is unreachable was **measured, not assumed**: the same chain exists on
+Linux, so an instrumented stand-in was preloaded ahead of the real library and the headless
+suite — which drives the real application over REST — was run against it. Across all 65
+scenarios the stand-in was loaded into every application process and logged zero calls, with
+the suite scoring 65/65 exactly as it does without it.
+
+The cost is that cairo-script serialisation does not work in these builds. Nothing the
+application offers uses it.
+
+**`libjbig` no longer ships either.** It is GPL-2.0-or-later — the DLL identifies itself as
+"JBIG-KIT 2.1 — (c) 1995-2014 Markus Kuhn — Licence: GPL" — and it arrives through
+`libgtk-4-1 / libgdk_pixbuf-2.0-0 → libtiff-6 → libjbig-0`, hard load-time imports every step
+of the way, so neither it nor libtiff could simply be dropped. libtiff imports ten symbols
+from it for one thing only: TIFF files whose Compression tag is JBIG. This project never asks
+for TIFF at all; the viewer and the file manager hand bytes to gdk-pixbuf and let it sniff the
+format.
+
+It is replaced on Windows by [`src/fakejbig/`](src/fakejbig/), the same approach as fakelzo:
+ten MIT-licensed entry points with the signatures from the public `jbig.h`, reporting failure
+instead of decoding. No JBIG-KIT code was used or consulted.
+
+Here too the conclusion was **measured**: the chain exists on Linux as well, so an instrumented
+stand-in was preloaded and eight TIFFs — raw, LZW, Deflate, PackBits, JPEG and the three CCITT
+bi-level variants — were loaded through gdk-pixbuf. All decoded exactly as in the control run,
+and no `jbg_*` function was called once. The cost is that a genuinely JBIG-compressed TIFF
+fails to open; effectively nothing produces those.
+
+**No GPL code ships in any bundle.** One string suggests otherwise and is worth explaining
+once, because every licence scanner finds it.
+
+`libgdk_pixbuf-2.0-0.dll` reports `"GPL"` for one of its fifteen image formats — the macOS
+icon format — and `"LGPL"` for the other fourteen. **The licence is LGPL**; it is stated in
+the header of the source file itself, which has said so unchanged since the file was added
+in 2007:
+
+> [`gdk-pixbuf/io-icns.c`](https://gitlab.gnome.org/GNOME/gdk-pixbuf/-/blob/2.44.4/gdk-pixbuf/io-icns.c#L6-17)
+> — *"This library is free software; you can redistribute it and/or modify it under the terms
+> of the GNU **Lesser** General Public License … version 2 of the License, or (at your option)
+> any later version."*
+
+The `"GPL"` on [line 521](https://gitlab.gnome.org/GNOME/gdk-pixbuf/-/blob/2.44.4/gdk-pixbuf/io-icns.c#L521)
+of that same file fills a display field returned by `gdk_pixbuf_format_get_license()`. It
+contradicts the file's own header, gdk-pixbuf's `COPYING` (LGPL-2.1) and Debian's copyright
+file, which puts GPL-2+ only on `tests/*` and `thumbnailer/*`. It is an upstream typo, not a
+licence.
+
+**This source tree stays MIT OR Apache-2.0**, and using the application —
+including inside a company — carries no obligation under any of these licenses.
+The obligations above attach to redistribution of the *binary packages* only.
+
+## Icons
+
+The interface uses SVG icons from [Icons8](https://icons8.com), under a license the
+author purchased. That license covers the releases published by this project — it is
+not granted to anyone else by the source being public.
+
+**If you fork or redistribute node.in.net, the purchase does not travel with the
+code.** Either credit Icons8 as their license requires, or replace the artwork with
+your own. The author credits them here in any case.
+
+The icons ship in every client, so this applies to all of them: the GTK assets
+under [`src/gtk-app/assets/`](src/gtk-app/assets/) and the other `src/*-ui/assets/`
+directories, the Android set under
+[`src/android-app/app/src/main/assets/icons/`](src/android-app/app/src/main/assets/icons/),
+and the copies served by the browser client from the `webapp` repository.
+
+The application logo (`src/gtk-app/assets/logo.svg`, `icon-128.png`, `icon-512.png`,
+`win32-icon.ico`, the Android launcher icons under `res/mipmap-*`) and the product
+name are the project's own and are not covered by the above.
+
+## Rust dependencies
+
+{{#each overview}}
+- **{{{name}}}** (`{{id}}`) — {{count}} crate{{#if (ne count 1)}}s{{/if}}
+{{/each}}
+
+### Crates
+
+| Crate | Version | License |
+| --- | --- | --- |
+{{#each crates}}
+| {{package.name}} | {{package.version}} | {{{license}}} |
+{{/each}}
+
+`Unknown` in the table means the crate declares no SPDX expression in its
+`Cargo.toml`; its terms come from the license file it ships. It does not mean the
+license is unidentified. One crate is in that position — `ring` 0.16.20, whose
+single LICENSE file combines ISC, MIT and OpenSSL notices; `about.toml` accepts
+that combination explicitly.
+
+### License texts
+
+Each license appears once below; the table above says which crates it covers.
+
+{{#each overview}}
+#### {{{name}}} (`{{id}}`)
+
+```
+{{{text}}}
+```
+
+{{/each}}
