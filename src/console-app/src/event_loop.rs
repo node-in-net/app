@@ -608,6 +608,8 @@ pub fn run_event_loop(ctx: EventLoopContext) {
                                                                 diff.relative_path
                                                             ),
                                                             transfer_id,
+                                                            offset: 0,
+                                                            length: None,
                                                         };
                                                 tokio::spawn({
                                                     let n = net_cmd_tx.clone();

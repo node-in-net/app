@@ -539,6 +539,8 @@ pub extern "system" fn Java_net_nodeinnet_app_core_NativeNode_startDownload<'loc
                     resource_id,
                     file_path,
                     transfer_id,
+                    offset: 0,
+                    length: None,
                 },
             ))
             .await;

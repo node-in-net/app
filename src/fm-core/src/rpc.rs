@@ -118,6 +118,10 @@ pub trait FileSystemRpc {
         Err(AppError::Other("Not implemented".to_string()))
     }
 
+    async fn read_at(&self, _path: String, _offset: u64, _len: u64) -> Result<Vec<u8>, AppError> {
+        Err(AppError::Other("Not implemented".to_string()))
+    }
+
     async fn extract_archive(&self, _archive_path: String) -> Result<(), AppError> {
         Err(AppError::Other("Not implemented".to_string()))
     }

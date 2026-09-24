@@ -159,6 +159,52 @@ fn unexpected(wanted: &str) -> AppError {
     AppError::Other(format!("peer sent an unexpected reply (wanted {wanted})"))
 }
 
+impl RemotePeerFsRpc {
+    async fn fetch(
+        &self,
+        path: String,
+        offset: u64,
+        length: Option<u64>,
+        progress_callback: Option<Box<dyn Fn(u64) + 'static>>,
+    ) -> Result<Vec<u8>, AppError> {
+        let transfer_id = Uuid::new_v4();
+        let mut rx = self.transfers.register(transfer_id);
+        (self.send)(P2pMessage::FileDownloadRequest {
+            resource_id: self.resource_id.clone(),
+            file_path: path,
+            transfer_id,
+            offset,
+            length,
+        });
+        loop {
+            match tokio::time::timeout(self.stall_timeout, rx.recv()).await {
+                Ok(Some(TransferEvent::Progress { bytes_read, .. })) => {
+                    if let Some(cb) = &progress_callback {
+                        cb(bytes_read);
+                    }
+                }
+                Ok(Some(TransferEvent::Done(Ok(())))) => {
+                    let temp = std::env::temp_dir().join(transfer_id.to_string());
+                    let bytes = tokio::fs::read(&temp)
+                        .await
+                        .map_err(|e| AppError::Other(format!("reading downloaded file: {e}")))?;
+                    let _ = tokio::fs::remove_file(&temp).await;
+                    return Ok(bytes);
+                }
+                Ok(Some(TransferEvent::Done(Err(e)))) => return Err(AppError::Other(e)),
+                Ok(None) => return Err(AppError::Other("transfer dropped".into())),
+                Err(_) => {
+                    self.transfers.forget(&transfer_id);
+                    return Err(AppError::Other(format!(
+                        "the transfer stalled: nothing arrived for {}s",
+                        self.stall_timeout.as_secs()
+                    )));
+                }
+            }
+        }
+    }
+}
+
 #[async_trait::async_trait(?Send)]
 impl FileSystemRpc for RemotePeerFsRpc {
     async fn list_dir(&self, path: String) -> Result<Vec<RemoteFileEntry>, AppError> {
@@ -274,39 +320,14 @@ impl FileSystemRpc for RemotePeerFsRpc {
         path: String,
         progress_callback: Option<Box<dyn Fn(u64) + 'static>>,
     ) -> Result<Vec<u8>, AppError> {
-        let transfer_id = Uuid::new_v4();
-        let mut rx = self.transfers.register(transfer_id);
-        (self.send)(P2pMessage::FileDownloadRequest {
-            resource_id: self.resource_id.clone(),
-            file_path: path,
-            transfer_id,
-        });
-        loop {
-            match tokio::time::timeout(self.stall_timeout, rx.recv()).await {
-                Ok(Some(TransferEvent::Progress { bytes_read, .. })) => {
-                    if let Some(cb) = &progress_callback {
-                        cb(bytes_read);
-                    }
-                }
-                Ok(Some(TransferEvent::Done(Ok(())))) => {
-                    let temp = std::env::temp_dir().join(transfer_id.to_string());
-                    let bytes = tokio::fs::read(&temp)
-                        .await
-                        .map_err(|e| AppError::Other(format!("reading downloaded file: {e}")))?;
-                    let _ = tokio::fs::remove_file(&temp).await;
-                    return Ok(bytes);
-                }
-                Ok(Some(TransferEvent::Done(Err(e)))) => return Err(AppError::Other(e)),
-                Ok(None) => return Err(AppError::Other("transfer dropped".into())),
-                Err(_) => {
-                    self.transfers.forget(&transfer_id);
-                    return Err(AppError::Other(format!(
-                        "the transfer stalled: nothing arrived for {}s",
-                        self.stall_timeout.as_secs()
-                    )));
-                }
-            }
+        self.fetch(path, 0, None, progress_callback).await
+    }
+
+    async fn read_at(&self, path: String, offset: u64, len: u64) -> Result<Vec<u8>, AppError> {
+        if len == 0 {
+            return Ok(Vec::new());
         }
+        self.fetch(path, offset, Some(len), None).await
     }
 
     async fn write_file(

@@ -160,6 +160,8 @@ pub fn generate_file_download_request(resource_id: &str, path: &str, transfer_id
             transfer_id: tid,
             resource_id: resource_id.to_string(),
             file_path: path.to_string(),
+            offset: 0,
+            length: None,
         };
         wrap_envelope(msg)
     } else {

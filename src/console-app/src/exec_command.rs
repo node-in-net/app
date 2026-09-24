@@ -563,6 +563,8 @@ pub async fn execute_command(
                     resource_id,
                     file_path: remote_path,
                     transfer_id,
+                    offset: 0,
+                    length: None,
                 };
                 let _ = net_tx_exec.send(NetCmd::SendToPeer(node_id, msg)).await;
             }
