@@ -665,6 +665,9 @@ impl SimpleComponent for FmPanelModel {
         };
 
         let with_default_toolbar = init.show_toolbar;
+        // Touch: folder, rename, delete and permissions live in the long-press menu and the
+        // page's action bar; four more buttons would not fit a phone's width.
+        let with_edit_buttons = with_default_toolbar && !gtk_dialogs::touch();
 
         let stack = gtk::Stack::builder().vexpand(true).build();
 
@@ -789,6 +792,8 @@ impl SimpleComponent for FmPanelModel {
             .show_start_title_buttons(false)
             .show_end_title_buttons(false)
             .title_widget(&empty_title)
+            // Inside the phone's navigation view it would grow a second back button.
+            .show_back_button(false)
             .build();
 
         let mk_icon_btn = |res: &str, tip: String| {
@@ -875,7 +880,7 @@ impl SimpleComponent for FmPanelModel {
                 crate::dialogs::show_create_dir_dialog(window.as_ref(), &shared, sender.clone());
             });
         }
-        if with_default_toolbar {
+        if with_edit_buttons {
             header.pack_start(&btn_create_dir);
         }
 
@@ -884,7 +889,7 @@ impl SimpleComponent for FmPanelModel {
             crate::i18n::tr("fm.rename_selected").to_string(),
         );
         btn_rename.set_sensitive(false);
-        if with_default_toolbar {
+        if with_edit_buttons {
             header.pack_start(&btn_rename);
         }
 
@@ -902,7 +907,7 @@ impl SimpleComponent for FmPanelModel {
                 crate::dialogs::show_delete_dialog(window.as_ref(), &shared, sender.clone());
             });
         }
-        if with_default_toolbar {
+        if with_edit_buttons {
             header.pack_start(&btn_delete);
         }
 
@@ -919,7 +924,7 @@ impl SimpleComponent for FmPanelModel {
                 crate::dialogs::show_chmod_dialog(window.as_ref(), &shared, sender.clone());
             });
         }
-        if with_default_toolbar {
+        if with_edit_buttons {
             header.pack_start(&btn_chmod);
         }
 
@@ -955,7 +960,9 @@ impl SimpleComponent for FmPanelModel {
         } else {
             format!("ui.fm_grid_icon_size_{}", panel_id)
         };
-        let current_size = config.get::<u32>(&cfg_key).unwrap_or(80) as i32;
+        // A phone starts with the list: names fit, tiles wrap them.
+        let default_size = if gtk_dialogs::touch() { 30 } else { 80 };
+        let current_size = config.get::<u32>(&cfg_key).unwrap_or(default_size) as i32;
         let btn_view_list = gtk::ToggleButton::builder()
             .child(&gtk::Image::from_resource("/com/fm-ui/gtk/list-icons.svg"))
             .tooltip_text(&*crate::i18n::tr("fm.list_view"))
@@ -1113,9 +1120,6 @@ impl SimpleComponent for FmPanelModel {
             &list_view,
             &shared,
             &sender,
-            btn_delete.clone(),
-            btn_refresh.clone(),
-            btn_chmod.clone(),
             list_store.clone(),
             selection_model.clone(),
         );
@@ -1182,7 +1186,11 @@ impl SimpleComponent for FmPanelModel {
         }
 
         let scrolled_list = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .hscrollbar_policy(if gtk_dialogs::touch() {
+                gtk::PolicyType::Never
+            } else {
+                gtk::PolicyType::Automatic
+            })
             .child(&list_view)
             .build();
         stack.add_named(&scrolled_list, Some("list-view"));
@@ -1190,9 +1198,6 @@ impl SimpleComponent for FmPanelModel {
         let grid_factory = create_grid_factory(
             &shared,
             &sender,
-            btn_delete.clone(),
-            btn_refresh.clone(),
-            btn_chmod.clone(),
             list_store.clone(),
             selection_model.clone(),
             init.thumbnailer.clone(),
@@ -1208,7 +1213,10 @@ impl SimpleComponent for FmPanelModel {
             .child(&grid_view)
             .build();
         stack.add_named(&scrolled_grid, Some("grid-view"));
-        if config.get::<u32>(&cfg_key).unwrap_or(80) == 30 {
+        // Touch: a tap opens, a long press selects and opens the menu.
+        list_view.set_single_click_activate(gtk_dialogs::touch());
+        grid_view.set_single_click_activate(gtk_dialogs::touch());
+        if config.get::<u32>(&cfg_key).unwrap_or(default_size) == 30 {
             stack.set_visible_child_name("list-view");
         } else {
             stack.set_visible_child_name("grid-view");
@@ -1462,17 +1470,16 @@ impl SimpleComponent for FmPanelModel {
         {
             let sender = sender.clone();
             let shared_c = shared.clone();
-            let gesture = gtk::GestureClick::builder().button(3).build();
-            gesture.connect_pressed(move |g, _, x, y| {
+            gtk_dialogs::menu::on_context(&stack, move |widget, x, y| {
                 let popover = crate::context_menu::create_empty_space_menu(&shared_c, &sender);
-                if let Some(widget) = g.widget() {
-                    popover.set_parent(&widget);
+                if !gtk_dialogs::menu::sheet_instead(&popover, widget) {
+                    popover.set_parent(widget);
                     popover
                         .set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
                     popover.popup();
                 }
+                true
             });
-            stack.add_controller(gesture);
         }
         content_box.append(&stack);
         content_box.append(&filter_bar);
@@ -1811,12 +1818,10 @@ impl SimpleComponent for FmPanelModel {
         widgets
             .btn_hist_forward
             .set_sensitive(self.can_hist_forward);
-        widgets
-            .btn_webdav
-            .set_visible(self.shared.source.borrow().can_mount);
-        widgets
-            .btn_webdav_sep
-            .set_visible(self.shared.source.borrow().can_mount);
+        // Mounting a drive into the OS file manager is a desktop feature.
+        let can_mount = self.shared.source.borrow().can_mount && !cfg!(target_os = "android");
+        widgets.btn_webdav.set_visible(can_mount);
+        widgets.btn_webdav_sep.set_visible(can_mount);
         widgets.btn_up.set_sensitive(!self.is_root);
 
         if let Some(msg) = &self.error_message {

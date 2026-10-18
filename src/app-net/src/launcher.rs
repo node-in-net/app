@@ -238,6 +238,8 @@ struct Tunnel {
     proxy: crate::SocksProxy,
     router: Arc<app_core::webvpn::WebVpnRouter>,
     children: Vec<(std::process::Child, LaunchedApp)>,
+    /// Kept without children: an in-app browser uses the proxy, not a launched process.
+    pinned: bool,
 }
 
 fn now_unix_ms() -> u64 {
@@ -303,6 +305,7 @@ impl SocksManager {
                     proxy,
                     router,
                     children: Vec::new(),
+                    pinned: false,
                 })
             }
         };
@@ -380,9 +383,48 @@ impl SocksManager {
                         false
                     }
                 });
-            !tunnel.children.is_empty()
+            tunnel.pinned || !tunnel.children.is_empty()
         });
         exited
+    }
+
+    /// Unpins every proxy opened with `open_proxy`; a tunnel still carrying launched apps stays.
+    pub fn release_proxies(&self) {
+        self.tunnels.lock().unwrap().retain(|_peer, tunnel| {
+            tunnel.pinned = false;
+            !tunnel.children.is_empty()
+        });
+    }
+
+    /// A SOCKS proxy through the peer's shared network for the app itself, kept until
+    /// `release_proxies` or the peer's tunnel closes.
+    pub fn open_proxy(
+        &self,
+        peer_id: &str,
+        resource_id: &str,
+        net_tx: tokio::sync::mpsc::Sender<client_core::NetCmd>,
+        router: Arc<app_core::webvpn::WebVpnRouter>,
+    ) -> std::io::Result<u16> {
+        let mut tunnels = self.tunnels.lock().unwrap();
+        let tunnel = match tunnels.entry(peer_id.to_string()) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let proxy = crate::SocksProxy::start(
+                    resource_id.to_string(),
+                    peer_id.to_string(),
+                    net_tx,
+                    router.clone(),
+                )?;
+                e.insert(Tunnel {
+                    proxy,
+                    router,
+                    children: Vec::new(),
+                    pinned: false,
+                })
+            }
+        };
+        tunnel.pinned = true;
+        Ok(tunnel.proxy.port())
     }
 
     pub fn terminate(&self, pid: u32) -> bool {

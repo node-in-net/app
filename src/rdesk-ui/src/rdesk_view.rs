@@ -68,19 +68,84 @@ fn init_css() {
     });
 }
 
+/// Zoom over the fitted frame (1 = fit) and how far it is panned. Touch only; the desktop
+/// always draws at fit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct View {
+    zoom: f64,
+    pan_x: f64,
+    pan_y: f64,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        Self {
+            zoom: 1.0,
+            pan_x: 0.0,
+            pan_y: 0.0,
+        }
+    }
+}
+
+/// The frame's scale and top-left corner in the canvas. A frame larger than the canvas is
+/// panned, and never past its edges.
+fn placement((da_w, da_h): (f64, f64), (f_w, f_h): (f64, f64), view: View) -> (f64, f64, f64) {
+    let scale = (da_w / f_w).min(da_h / f_h) * view.zoom;
+    let place = |da: f64, img: f64, pan: f64| {
+        if img <= da {
+            (da - img) / 2.0
+        } else {
+            ((da - img) / 2.0 + pan).clamp(da - img, 0.0)
+        }
+    };
+    (
+        scale,
+        place(da_w, f_w * scale, view.pan_x),
+        place(da_h, f_h * scale, view.pan_y),
+    )
+}
+
+/// Keeps the pan within what `placement` can show, so a pan past an edge does not pile up.
+fn clamp_view(da: (f64, f64), frame: (f64, f64), view: View) -> View {
+    let (_, x, y) = placement(da, frame, view);
+    let centered = placement(
+        da,
+        frame,
+        View {
+            zoom: view.zoom,
+            pan_x: 0.0,
+            pan_y: 0.0,
+        },
+    );
+    View {
+        zoom: view.zoom,
+        pan_x: x - centered.1,
+        pan_y: y - centered.2,
+    }
+}
+
+#[cfg(test)]
 fn get_translated_coords(
+    da: (f64, f64),
+    widget: (f64, f64),
+    frame: (f64, f64),
+    screen: (f64, f64),
+) -> Option<(i32, i32)> {
+    translated_coords(da, widget, frame, screen, View::default())
+}
+
+fn translated_coords(
     (da_width, da_height): (f64, f64),
     (x_widget, y_widget): (f64, f64),
     (f_w, f_h): (f64, f64),
     (scr_w, scr_h): (f64, f64),
+    view: View,
 ) -> Option<(i32, i32)> {
     if f_w <= 0.0 || f_h <= 0.0 {
         return None;
     }
 
-    let scale = (da_width / f_w).min(da_height / f_h);
-    let offset_x = (da_width - f_w * scale) / 2.0;
-    let offset_y = (da_height - f_h * scale) / 2.0;
+    let (scale, offset_x, offset_y) = placement((da_width, da_height), (f_w, f_h), view);
 
     let x_frame = (x_widget - offset_x) / scale;
     let y_frame = (y_widget - offset_y) / scale;
@@ -92,6 +157,140 @@ fn get_translated_coords(
     } else {
         None
     }
+}
+
+/// Touch on the remote screen: two fingers pinch-zoom, one finger pans a zoomed frame, and a
+/// long press is a right click. A tap is the click gesture's.
+fn add_touch_gestures(
+    da: &gtk::DrawingArea,
+    view: &Rc<Cell<View>>,
+    draw_state: &Rc<RefCell<DrawState>>,
+    mirror: &Rc<Cell<LiveMirror>>,
+    geom: &GeomMirror,
+    sender: &ComponentSender<RemoteDesktopModel>,
+) {
+    let sizes = {
+        let da = da.clone();
+        let draw_state = draw_state.clone();
+        Rc::new(move || {
+            let ds = draw_state.borrow();
+            (
+                (da.width() as f64, da.height() as f64),
+                (ds.width as f64, ds.height as f64),
+            )
+        })
+    };
+
+    let zoom = gtk::GestureZoom::new();
+    let start: Rc<Cell<(View, f64, f64)>> = Rc::new(Cell::new((View::default(), 0.0, 0.0)));
+    {
+        let start = start.clone();
+        let view = view.clone();
+        zoom.connect_begin(move |g, _| {
+            g.set_state(gtk::EventSequenceState::Claimed);
+            if let Some((x, y)) = g.bounding_box_center() {
+                start.set((view.get(), x, y));
+            }
+        });
+    }
+    {
+        let view = view.clone();
+        let sizes = sizes.clone();
+        let da = da.clone();
+        zoom.connect_scale_changed(move |g, scale| {
+            let Some((cx, cy)) = g.bounding_box_center() else {
+                return;
+            };
+            let (v0, cx0, cy0) = start.get();
+            let (size, frame) = sizes();
+            if frame.0 <= 0.0 || frame.1 <= 0.0 {
+                return;
+            }
+            // The frame point under the fingers stays under them.
+            let (s0, ox0, oy0) = placement(size, frame, v0);
+            let (fx, fy) = ((cx0 - ox0) / s0, (cy0 - oy0) / s0);
+            let zoom = (v0.zoom * scale).clamp(1.0, 6.0);
+            let (s1, cx1, cy1) = placement(
+                size,
+                frame,
+                View {
+                    zoom,
+                    pan_x: 0.0,
+                    pan_y: 0.0,
+                },
+            );
+            view.set(clamp_view(
+                size,
+                frame,
+                View {
+                    zoom,
+                    pan_x: cx - fx * s1 - cx1,
+                    pan_y: cy - fy * s1 - cy1,
+                },
+            ));
+            da.queue_draw();
+        });
+    }
+    da.add_controller(zoom);
+
+    let drag = gtk::GestureDrag::new();
+    drag.set_touch_only(true);
+    let origin = Rc::new(Cell::new(View::default()));
+    {
+        let origin = origin.clone();
+        let view = view.clone();
+        drag.connect_drag_begin(move |_, _, _| origin.set(view.get()));
+    }
+    {
+        let view = view.clone();
+        let da = da.clone();
+        drag.connect_drag_update(move |g, dx, dy| {
+            let v0 = origin.get();
+            if v0.zoom <= 1.0 || dx.hypot(dy) < 8.0 {
+                return;
+            }
+            g.set_state(gtk::EventSequenceState::Claimed);
+            let (size, frame) = sizes();
+            view.set(clamp_view(
+                size,
+                frame,
+                View {
+                    pan_x: v0.pan_x + dx,
+                    pan_y: v0.pan_y + dy,
+                    ..v0
+                },
+            ));
+            da.queue_draw();
+        });
+    }
+    da.add_controller(drag);
+
+    let press = gtk::GestureLongPress::new();
+    press.set_touch_only(true);
+    {
+        let view = view.clone();
+        let mirror = mirror.clone();
+        let geom = geom.clone();
+        let da = da.clone();
+        let sender = sender.clone();
+        press.connect_pressed(move |g, x, y| {
+            if !mirror.get().capturing() {
+                return;
+            }
+            g.set_state(gtk::EventSequenceState::Claimed);
+            if let Some((rx, ry)) = translate_pointer(&da, &geom, view.get(), x, y) {
+                let button = remap_button(3);
+                for event in [
+                    DesktopInputEvent::MouseMove { x: rx, y: ry },
+                    DesktopInputEvent::MouseDown { button },
+                    DesktopInputEvent::MouseUp { button },
+                ] {
+                    let _ = sender.output(RemoteDesktopOutput::InputEvent(event));
+                }
+            }
+        });
+    }
+    da.add_controller(press);
 }
 
 fn remap_button(gtk_btn: u32) -> u8 {
@@ -108,15 +307,17 @@ type GeomMirror = Rc<Cell<(usize, usize, usize, usize)>>;
 fn translate_pointer(
     da: &gtk::DrawingArea,
     geom: &GeomMirror,
+    view: View,
     x: f64,
     y: f64,
 ) -> Option<(i32, i32)> {
     let (f_w, f_h, scr_w, scr_h) = geom.get();
-    get_translated_coords(
+    translated_coords(
         (da.width() as f64, da.height() as f64),
         (x, y),
         (f_w as f64, f_h as f64),
         (scr_w as f64, scr_h as f64),
+        view,
     )
 }
 
@@ -289,6 +490,8 @@ impl SimpleComponent for RemoteDesktopModel {
             .show_start_title_buttons(false)
             .show_end_title_buttons(false)
             .title_widget(&empty_title)
+            // Inside the phone's navigation view it would grow a second back button.
+            .show_back_button(false)
             .build();
 
         let back_btn = gtk::Button::builder()
@@ -301,15 +504,17 @@ impl SimpleComponent for RemoteDesktopModel {
         back_btn.connect_clicked(move |_| {
             let _ = sender_back.output(RemoteDesktopOutput::Back);
         });
-        header.pack_start(&back_btn);
-
-        header.pack_start(
-            &gtk::Separator::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .margin_top(8)
-                .margin_bottom(8)
-                .build(),
-        );
+        let touch = gtk_dialogs::touch();
+        if !touch {
+            header.pack_start(&back_btn);
+            header.pack_start(
+                &gtk::Separator::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .margin_top(8)
+                    .margin_bottom(8)
+                    .build(),
+            );
+        }
 
         let control_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         control_box.set_valign(gtk::Align::Center);
@@ -342,7 +547,6 @@ impl SimpleComponent for RemoteDesktopModel {
         original_size_switch.set_cursor_from_name(Some("pointer"));
         size_box.append(&size_lbl);
         size_box.append(&original_size_switch);
-        header.pack_start(&size_box);
 
         let quality_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         quality_box.set_valign(gtk::Align::Center);
@@ -367,7 +571,6 @@ impl SimpleComponent for RemoteDesktopModel {
             .build();
         quality_box.append(&quality_lbl);
         quality_box.append(&quality_combo);
-        header.pack_start(&quality_box);
 
         let select_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         select_box.set_valign(gtk::Align::Center);
@@ -384,7 +587,45 @@ impl SimpleComponent for RemoteDesktopModel {
         force_select_switch.set_cursor_from_name(Some("pointer"));
         select_box.append(&select_lbl);
         select_box.append(&force_select_switch);
-        header.pack_start(&select_box);
+        let view: Rc<Cell<View>> = Rc::new(Cell::new(View::default()));
+        // Touch: fit the whole screen, or fill the height and pan sideways to tap precisely.
+        let fill_btn = gtk::ToggleButton::builder()
+            .child(&gtk::Image::from_resource(
+                "/com/rdesk-ui/gtk/fill-height.svg",
+            ))
+            .css_classes(vec!["flat", "circular"])
+            .valign(gtk::Align::Center)
+            .build();
+        if touch {
+            // A phone keeps Control and Connect in the bar; the rest opens in a sheet.
+            let sheet_box = gtk::Box::new(gtk::Orientation::Vertical, 18);
+            sheet_box.set_margin_top(24);
+            sheet_box.set_margin_bottom(24);
+            sheet_box.set_margin_start(24);
+            sheet_box.set_margin_end(24);
+            for b in [&size_box, &quality_box, &select_box] {
+                b.set_margin_start(0);
+                b.set_halign(gtk::Align::Center);
+                sheet_box.append(b);
+            }
+            let sheet = adw::Dialog::builder()
+                .presentation_mode(adw::DialogPresentationMode::BottomSheet)
+                .child(&sheet_box)
+                .build();
+            let settings_btn = gtk::Button::builder()
+                .child(&gtk::Image::from_icon_name("emblem-system-symbolic"))
+                .css_classes(vec!["flat", "circular"])
+                .valign(gtk::Align::Center)
+                .build();
+            settings_btn.connect_clicked(move |b| sheet.present(Some(b)));
+            header.pack_end(&settings_btn);
+            fill_btn.set_tooltip_text(Some(&crate::i18n::tr("rdesk.fill_height")));
+            header.pack_end(&fill_btn);
+        } else {
+            header.pack_start(&size_box);
+            header.pack_start(&quality_box);
+            header.pack_start(&select_box);
+        }
 
         let connect_btn = gtk::Button::builder()
             .label(crate::i18n::tr("rdesk.connect_session"))
@@ -400,7 +641,11 @@ impl SimpleComponent for RemoteDesktopModel {
             .margin_end(12)
             .valign(gtk::Align::Center)
             .build();
-        header.pack_end(&status_lbl);
+        if touch {
+            status_lbl.set_visible(false);
+        } else {
+            header.pack_end(&status_lbl);
+        }
 
         header.set_visible(init.show_toolbar);
         root.append(&header);
@@ -418,7 +663,9 @@ impl SimpleComponent for RemoteDesktopModel {
 
         let glass_card = gtk::Box::new(gtk::Orientation::Vertical, 24);
         glass_card.add_css_class("rdesk-glass-card");
-        glass_card.set_width_request(450);
+        if !touch {
+            glass_card.set_width_request(450);
+        }
 
         let dash_icon = gtk::Image::from_resource("/com/rdesk-ui/gtk/desktop-pc.svg");
         dash_icon.set_pixel_size(80);
@@ -453,10 +700,11 @@ impl SimpleComponent for RemoteDesktopModel {
         stack.add_named(&dashboard_wrapper, Some("dashboard"));
 
         let canvas_wrapper = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        canvas_wrapper.set_margin_start(24);
-        canvas_wrapper.set_margin_end(24);
-        canvas_wrapper.set_margin_top(24);
-        canvas_wrapper.set_margin_bottom(24);
+        let margin = if touch { 4 } else { 24 };
+        canvas_wrapper.set_margin_start(margin);
+        canvas_wrapper.set_margin_end(margin);
+        canvas_wrapper.set_margin_top(margin);
+        canvas_wrapper.set_margin_bottom(margin);
 
         let drawing_area = gtk::DrawingArea::new();
         drawing_area.add_css_class("rdesk-canvas");
@@ -485,13 +733,14 @@ impl SimpleComponent for RemoteDesktopModel {
         {
             let mirror = mirror.clone();
             let geom = geom_mirror.clone();
+            let view = view.clone();
             let da = drawing_area.clone();
             let sender = sender.clone();
             motion_controller.connect_motion(move |_, x, y| {
                 if !mirror.get().capturing() {
                     return;
                 }
-                if let Some((rx, ry)) = translate_pointer(&da, &geom, x, y) {
+                if let Some((rx, ry)) = translate_pointer(&da, &geom, view.get(), x, y) {
                     let _ = sender.output(RemoteDesktopOutput::InputEvent(
                         DesktopInputEvent::MouseMove { x: rx, y: ry },
                     ));
@@ -505,14 +754,17 @@ impl SimpleComponent for RemoteDesktopModel {
         {
             let mirror = mirror.clone();
             let geom = geom_mirror.clone();
+            let view = view.clone();
             let da = drawing_area.clone();
             let sender = sender.clone();
             click_gesture.connect_pressed(move |gesture, _, x, y| {
                 da.grab_focus();
-                if !mirror.get().capturing() {
+                // A finger clicks on release: pressing first would hold the button down for
+                // the whole pan or pinch that may follow.
+                if touch || !mirror.get().capturing() {
                     return;
                 }
-                if let Some((rx, ry)) = translate_pointer(&da, &geom, x, y) {
+                if let Some((rx, ry)) = translate_pointer(&da, &geom, view.get(), x, y) {
                     let button = remap_button(gesture.current_button());
                     let _ = sender.output(RemoteDesktopOutput::InputEvent(
                         DesktopInputEvent::MouseMove { x: rx, y: ry },
@@ -526,17 +778,23 @@ impl SimpleComponent for RemoteDesktopModel {
         {
             let mirror = mirror.clone();
             let geom = geom_mirror.clone();
+            let view = view.clone();
             let da = drawing_area.clone();
             let sender = sender.clone();
             click_gesture.connect_released(move |gesture, _, x, y| {
                 if !mirror.get().capturing() {
                     return;
                 }
-                if let Some((rx, ry)) = translate_pointer(&da, &geom, x, y) {
+                if let Some((rx, ry)) = translate_pointer(&da, &geom, view.get(), x, y) {
                     let button = remap_button(gesture.current_button());
                     let _ = sender.output(RemoteDesktopOutput::InputEvent(
                         DesktopInputEvent::MouseMove { x: rx, y: ry },
                     ));
+                    if touch {
+                        let _ = sender.output(RemoteDesktopOutput::InputEvent(
+                            DesktopInputEvent::MouseDown { button },
+                        ));
+                    }
                     let _ = sender.output(RemoteDesktopOutput::InputEvent(
                         DesktopInputEvent::MouseUp { button },
                     ));
@@ -544,6 +802,37 @@ impl SimpleComponent for RemoteDesktopModel {
             });
         }
         drawing_area.add_controller(click_gesture);
+        if touch {
+            add_touch_gestures(
+                &drawing_area,
+                &view,
+                &draw_state,
+                &mirror,
+                &geom_mirror,
+                &sender,
+            );
+            let da = drawing_area.clone();
+            let view = view.clone();
+            let draw_state = draw_state.clone();
+            fill_btn.connect_toggled(move |b| {
+                let size = (da.width() as f64, da.height() as f64);
+                let frame = {
+                    let ds = draw_state.borrow();
+                    (ds.width as f64, ds.height as f64)
+                };
+                let zoom = if b.is_active() && frame.0 > 0.0 && frame.1 > 0.0 {
+                    let fit = (size.0 / frame.0).min(size.1 / frame.1);
+                    (size.1 / frame.1 / fit).max(1.0)
+                } else {
+                    1.0
+                };
+                view.set(View {
+                    zoom,
+                    ..View::default()
+                });
+                da.queue_draw();
+            });
+        }
 
         let scroll_controller =
             gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
@@ -598,6 +887,7 @@ impl SimpleComponent for RemoteDesktopModel {
 
         {
             let draw_state = draw_state.clone();
+            let view = view.clone();
             drawing_area.set_draw_func(move |_, cr, width, height| {
                 let st = draw_state.borrow();
                 if !st.connected {
@@ -611,9 +901,11 @@ impl SimpleComponent for RemoteDesktopModel {
                     cr.set_source_rgb(0.04, 0.05, 0.09);
                     cr.paint().unwrap();
 
-                    let scale = (width as f64 / w as f64).min(height as f64 / h as f64);
-                    let offset_x = (width as f64 - w as f64 * scale) / 2.0;
-                    let offset_y = (height as f64 - h as f64 * scale) / 2.0;
+                    let (scale, offset_x, offset_y) = placement(
+                        (width as f64, height as f64),
+                        (w as f64, h as f64),
+                        view.get(),
+                    );
 
                     cr.set_source_rgba(0.0, 0.0, 0.0, 0.55);
                     cr.rectangle(

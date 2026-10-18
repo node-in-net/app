@@ -55,6 +55,7 @@
   "rdesk.establish_desc": "Végponttól végpontig titkosított képernyőmegosztás és beviteli vezérlés WebRTC-n át, H.264 tömörítéssel.",
   "rdesk.establish_title": "Távoli kapcsolat létrehozása",
   "rdesk.failed": "Sikertelen",
+  "rdesk.fill_height": "Teljes magasság",
   "rdesk.gst_available": "🟢 <b>GStreamer PipeWire forrás</b>: Elérhető",
   "rdesk.gst_missing": "🔴 <b>GStreamer PipeWire forrás</b>: Hiányzik (Szükséges a közvetítés hosztolásához)",
   "rdesk.gst_success": "🟢 A GStreamer sikeresen telepítve!",

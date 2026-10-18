@@ -70,19 +70,43 @@ fn value_prop(icon: &str, caption: &str) -> gtk::Box {
 fn value_props(files_caption: &str) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     row.set_halign(gtk::Align::Center);
-    row.append(&value_prop("sysinfo", &crate::i18n::tr("services.sysinfo")));
-    row.append(&value_prop("fileexplorer", files_caption));
-    row.append(&value_prop(
-        "unix-console",
-        &crate::i18n::tr("services.terminal"),
-    ));
-    row.append(&value_prop("display", &crate::i18n::tr("services.desktop")));
-    row.append(&value_prop("vpn", &crate::i18n::tr("services.network")));
-    if cfg!(target_os = "windows") {
-        row.append(&value_prop(
+    let props = [
+        (
+            ServiceKind::SystemInfo,
+            "sysinfo",
+            crate::i18n::tr("services.sysinfo"),
+        ),
+        (
+            ServiceKind::Files,
+            "fileexplorer",
+            files_caption.to_string(),
+        ),
+        (
+            ServiceKind::Terminal,
+            "unix-console",
+            crate::i18n::tr("services.terminal"),
+        ),
+        (
+            ServiceKind::Desktop,
+            "display",
+            crate::i18n::tr("services.desktop"),
+        ),
+        (
+            ServiceKind::Network,
+            "vpn",
+            crate::i18n::tr("services.network"),
+        ),
+        (
+            ServiceKind::Registry,
             "registry",
-            &crate::i18n::tr("services.registry"),
-        ));
+            crate::i18n::tr("services.registry"),
+        ),
+    ];
+    for (kind, icon, caption) in props {
+        let windows_only = kind == ServiceKind::Registry && !cfg!(target_os = "windows");
+        if crate::platform::hostable(kind) && !windows_only {
+            row.append(&value_prop(icon, &caption));
+        }
     }
     row
 }

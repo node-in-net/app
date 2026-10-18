@@ -217,6 +217,8 @@ impl SimpleComponent for SysInfoModel {
             .show_start_title_buttons(false)
             .show_end_title_buttons(false)
             .title_widget(&empty_title)
+            // Inside the phone's navigation view it would grow a second back button.
+            .show_back_button(false)
             .build();
 
         let btn_back = gtk::Button::builder()
@@ -233,6 +235,8 @@ impl SimpleComponent for SysInfoModel {
                 let _ = sender.output(SysInfoOutput::Back);
             }
         ));
+        // On the phone the page's own back arrow leads out.
+        btn_back.set_visible(!gtk_dialogs::touch());
         header.pack_start(&btn_back);
 
         header.pack_start(

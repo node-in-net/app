@@ -1,4 +1,3 @@
-#![allow(deprecated)]
 use adw::prelude::*;
 use relm4::ComponentSender;
 
@@ -6,14 +5,8 @@ use crate::fm_view::{FmPanelModel, FmPanelOutput, Shared};
 use crate::utils::build_path_string;
 
 pub fn present_error(window: Option<&gtk::Window>, title: &str, body: &str) {
-    let dialog = adw::MessageDialog::builder()
-        .modal(true)
-        .heading(title)
-        .body(body)
-        .build();
-    if let Some(w) = window {
-        dialog.set_transient_for(Some(w));
-    }
+    let dialog = gtk_dialogs::Alert::new(window, Some(title), Some(body));
+    dialog.set_modal(true);
     dialog.add_response("ok", &crate::i18n::tr("fm.ok_btn"));
     dialog.present();
 }
@@ -42,7 +35,7 @@ pub fn show_create_dir_dialog(
     sender: ComponentSender<FmPanelModel>,
 ) {
     let Some(window) = window else { return };
-    let dialog = adw::MessageDialog::new(Some(window), None, None);
+    let dialog = gtk_dialogs::Alert::new(Some(window), None, None);
 
     let entry = gtk::Entry::builder()
         .placeholder_text(&*crate::i18n::tr("fm.dir_name_placeholder"))
@@ -104,7 +97,7 @@ pub fn show_create_dir_dialog(
     dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
 
     let parent_for_cb = parent_path;
-    dialog.connect_response(None, move |d, response| {
+    dialog.connect_response(move |response| {
         if response == "create" {
             let name = entry.text().to_string();
             if !name.is_empty() && !name.contains('/') {
@@ -114,7 +107,6 @@ pub fn show_create_dir_dialog(
                 });
             }
         }
-        d.close();
     });
     dialog.present();
 }
@@ -188,16 +180,14 @@ pub fn show_delete_dialog(
     extra_box.append(&title_box);
     extra_box.append(&info_vbox);
 
-    let dialog = adw::MessageDialog::builder()
-        .transient_for(window)
-        .modal(true)
-        .extra_child(&extra_box)
-        .build();
+    let dialog = gtk_dialogs::Alert::new(Some(window), None, None);
+    dialog.set_modal(true);
+    dialog.set_extra_child(Some(&extra_box));
     dialog.add_response("cancel", &crate::i18n::tr("fm.cancel"));
     dialog.add_response("delete", &crate::i18n::tr("fm.context.delete"));
     dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
 
-    dialog.connect_response(None, move |d, response| {
+    dialog.connect_response(move |response| {
         if response == "delete" {
             let paths: Vec<String> = files
                 .iter()
@@ -210,7 +200,6 @@ pub fn show_delete_dialog(
             let names: Vec<String> = files.iter().map(|(n, _)| n.clone()).collect();
             let _ = sender.output(FmPanelOutput::Delete { paths, names });
         }
-        d.close();
     });
     dialog.present();
 }
@@ -253,7 +242,7 @@ pub fn rename_dialog_for(
     };
     let old_path = format!("{}{}", safe_parent, old_name);
 
-    let dialog = adw::MessageDialog::new(
+    let dialog = gtk_dialogs::Alert::new(
         Some(window),
         Some(&*crate::i18n::tr("fm.rename_title")),
         None,
@@ -269,7 +258,7 @@ pub fn rename_dialog_for(
     dialog.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
 
     let old_name_c = old_name.to_string();
-    dialog.connect_response(None, move |d, response| {
+    dialog.connect_response(move |response| {
         if response == "rename" {
             let new_name = entry.text().to_string();
             if !new_name.is_empty() && !new_name.contains('/') && new_name != old_name_c {
@@ -279,7 +268,6 @@ pub fn rename_dialog_for(
                 });
             }
         }
-        d.close();
     });
     dialog.present();
 }
@@ -330,7 +318,7 @@ pub fn chmod_dialog_for(
     initial_mode: u32,
     sender: ComponentSender<FmPanelModel>,
 ) {
-    let dialog = adw::MessageDialog::new(
+    let dialog = gtk_dialogs::Alert::new(
         Some(window),
         Some(&crate::i18n::tr("fm.chmod_title")),
         Some(&crate::i18n::trf(
@@ -448,7 +436,7 @@ pub fn chmod_dialog_for(
     dialog.set_response_appearance("apply", adw::ResponseAppearance::Suggested);
 
     let path = path.to_string();
-    dialog.connect_response(None, move |d, response| {
+    dialog.connect_response(move |response| {
         if response == "apply" {
             let text = octal.text();
             let mode = u32::from_str_radix(text.trim(), 8)
@@ -459,7 +447,6 @@ pub fn chmod_dialog_for(
                 mode,
             });
         }
-        d.close();
     });
     dialog.present();
 }

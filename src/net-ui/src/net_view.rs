@@ -228,6 +228,8 @@ impl SimpleComponent for NetworkModel {
             .show_start_title_buttons(false)
             .show_end_title_buttons(false)
             .title_widget(&empty_title)
+            // Inside the phone's navigation view it would grow a second back button.
+            .show_back_button(false)
             .build();
 
         let btn_back = gtk::Button::builder()
@@ -239,6 +241,8 @@ impl SimpleComponent for NetworkModel {
         btn_back.connect_clicked(move |_| {
             let _ = sender_back.output(NetworkOutput::Back);
         });
+        // On the phone the page's own back arrow leads out.
+        btn_back.set_visible(!gtk_dialogs::touch());
         header.pack_start(&btn_back);
 
         header.pack_start(
@@ -598,11 +602,11 @@ fn rebuild_apps_list(
             let Some(window) = btn.root().and_downcast::<gtk::Window>() else {
                 return;
             };
-            let dialog = adw::MessageDialog::builder()
-                .heading(&*crate::i18n::tr("net.confirm_removal_title"))
-                .body(&*crate::i18n::tr("net.confirm_removal_body"))
-                .transient_for(&window)
-                .build();
+            let dialog = gtk_dialogs::Alert::new(
+                Some(&window),
+                Some(&crate::i18n::tr("net.confirm_removal_title")),
+                Some(&crate::i18n::tr("net.confirm_removal_body")),
+            );
             dialog.add_response("cancel", &crate::i18n::tr("net.cancel_btn"));
             dialog.add_response("remove", &crate::i18n::tr("net.remove_btn_confirm"));
             dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
@@ -610,12 +614,11 @@ fn rebuild_apps_list(
             let sender_resp = sender_rm.clone();
             let config_resp = config_rm.clone();
             let id_resp = id_rm.clone();
-            dialog.connect_response(None, move |d, response| {
+            dialog.connect_response(move |response| {
                 if response == "remove" {
                     client_config::apps::remove_by_id(&config_resp, &id_resp);
                     sender_resp.input(NetworkInput::ReloadApps);
                 }
-                d.destroy();
             });
             dialog.present();
         });

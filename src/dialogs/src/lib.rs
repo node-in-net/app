@@ -2,6 +2,15 @@
 use gtk::prelude::*;
 use std::path::PathBuf;
 
+mod alert;
+pub mod gate;
+pub mod im;
+pub mod menu;
+mod touch;
+
+pub use alert::Alert;
+pub use touch::{set_touch, touch};
+
 pub struct Filter {
     pub name: String,
     pub extensions: Vec<String>,
@@ -30,7 +39,7 @@ where
         let keep_alive = dialog.clone();
         dialog.select_folder(parent, gtk::gio::Cancellable::NONE, move |res| {
             let _keep_alive = keep_alive;
-            if let Some(path) = res.ok().and_then(|f| f.path()) {
+            if let Some(path) = res.ok().and_then(|f| local_folder(&f)) {
                 on_pick(path);
             }
         });
@@ -65,11 +74,74 @@ where
         let keep_alive = dialog.clone();
         dialog.open(parent, gtk::gio::Cancellable::NONE, move |res| {
             let _keep_alive = keep_alive;
-            if let Some(path) = res.ok().and_then(|f| f.path()) {
-                on_pick(path);
+            let Ok(file) = res else { return };
+            if file.uri_scheme().as_deref() != Some("content") {
+                if let Some(path) = file.path() {
+                    on_pick(path);
+                }
+                return;
             }
+            gtk::glib::spawn_future_local(async move {
+                if let Some(path) = copy_to_cache(&file).await {
+                    on_pick(path);
+                }
+            });
         });
     }
+}
+
+/// A picked folder as a real path. On Android the picker hands out a SAF tree URI; one on shared
+/// storage maps to its path (the app has All-files access), anything else cannot be shared.
+#[cfg(not(windows))]
+fn local_folder(folder: &gtk::gio::File) -> Option<PathBuf> {
+    if folder.uri_scheme().as_deref() != Some("content") {
+        return folder.path();
+    }
+    let uri = folder.uri();
+    let rest = uri.strip_prefix("content://com.android.externalstorage.documents/tree/")?;
+    let id = gtk::glib::Uri::unescape_string(rest.split('/').next()?, None::<&str>)?;
+    let (volume, rel) = id.split_once(':')?;
+    let base = match volume {
+        "primary" => std::env::var_os("NODEINNET_STORAGE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/storage/emulated/0")),
+        _ => PathBuf::from("/storage").join(volume),
+    };
+    let path = base.join(rel);
+    path.is_dir().then_some(path)
+}
+
+/// A picked SAF document has no path: it is copied into the cache under its display name.
+#[cfg(not(windows))]
+async fn copy_to_cache(file: &gtk::gio::File) -> Option<PathBuf> {
+    let info = file
+        .query_info_future(
+            "standard::display-name",
+            gtk::gio::FileQueryInfoFlags::NONE,
+            gtk::glib::Priority::DEFAULT,
+        )
+        .await
+        .ok()?;
+    // The provider names the file: keep only a plain last component of it.
+    let name = info.display_name();
+    let name = std::path::Path::new(&name).file_name()?.to_owned();
+    let unique = format!(
+        "{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let dir = gtk::glib::user_cache_dir().join("picked").join(unique);
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(name);
+    let (copy, _progress) = file.copy_future(
+        &gtk::gio::File::for_path(&dest),
+        gtk::gio::FileCopyFlags::OVERWRITE,
+        gtk::glib::Priority::DEFAULT,
+    );
+    copy.await.ok()?;
+    Some(dest)
 }
 
 #[cfg(windows)]

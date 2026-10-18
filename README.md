@@ -31,7 +31,7 @@ connects and uses what its peers offer.
 | `app-net` | The network side: message routing, node runtime, device identity, account sign-in. |
 | `app-headless` | The same application driven over a local REST API instead of a window, for automated runs. |
 | `console-app` | A headless node for servers. |
-| `android-node`, `iphone-node` | JNI and FFI wrappers around the same core. |
+| `android-app` | The Android entry point of `gtk-app` and its Gradle project. |
 | `wasm-node` | The protocol compiled to WebAssembly for the browser client. |
 | `node-network` | A small library loaded into a program you launch, so its connections go through the peer instead of your own network. See below. |
 
@@ -192,14 +192,25 @@ Screen capture uses ScreenCaptureKit, which needs macOS 12.3 or newer.
 
 ### Android
 
-Needs the Android SDK and NDK:
+The Android app is the GTK client itself (`gtk-app`, with its phone layout) on GTK's Android
+runtime (API 31+): `src/android-app` holds only its entry point and the Gradle project. It is
+built against the GTK stack release of
+[android-rust-gtk4-adwaita](https://github.com/savchenko-igor/android-rust-gtk4-adwaita) that
+`gtk-stack.lock` pins (version and SHA-256), unpacked into
+`~/.cache/android-rust-gtk4-adwaita/<version>/`; `GTK_STACK` points at a checkout instead.
+Needs the Android SDK, NDK 27.0.12077973 and cargo-ndk:
 
 ```sh
 cargo install cargo-ndk
 rustup target add aarch64-linux-android
-npm run build-android-node          # native library into the app project
-cd src/android-app && ./gradlew assembleDebug
+npm run fetch-gtk-stack             # the locked GTK stack (build-android fetches it too)
+npm run build-android               # release APK in bin/android-gtk-app
+npm run run-android                 # build, install and start on the connected device
+npm run run-android-dev             # the same, linked faster, for iterating
 ```
+
+`npm run run-app-mobile` runs the desktop binary with the phone layout (`NODEINNET_MOBILE=1`);
+`src/android-app/preview.sh` shows it in a browser through Broadway.
 
 ### Distributable packages
 

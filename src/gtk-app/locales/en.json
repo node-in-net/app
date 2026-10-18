@@ -1,4 +1,8 @@
 {
+  "browser.failed": "Could not open a connection through this device.",
+  "browser.hint": "Pages open through the internet connection of %{peer}.",
+  "browser.no_network": "This device does not share its network.",
+  "browser.open": "Open browser",
   "app.close": "Close",
   "app.critical_error": "Critical error",
   "app.my_computer": "My computer",

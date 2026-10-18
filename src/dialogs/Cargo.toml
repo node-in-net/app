@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 publish = false
-description = "File and folder pickers that survive Windows"
+description = "Pickers, dialogs, menus and touch input that work the same on the desktop, Windows and Android"
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
+adw = { package = "libadwaita", version = "0.7", features = ["v1_6"] }
 relm4 = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

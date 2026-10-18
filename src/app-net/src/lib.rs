@@ -468,6 +468,16 @@ impl Net {
         routers: Arc<Routers>,
         events: impl Fn(NetEvent) + Send + Sync + 'static,
     ) -> Net {
+        Self::spawn_hosting(identity, routers, p2p_handlers::Capabilities::ALL, true, events)
+    }
+
+    pub fn spawn_hosting(
+        identity: Identity,
+        routers: Arc<Routers>,
+        capabilities: p2p_handlers::Capabilities,
+        launch_apps: bool,
+        events: impl Fn(NetEvent) + Send + Sync + 'static,
+    ) -> Net {
         let (net_tx, net_rx) = tokio::sync::mpsc::channel(256);
         let handler = Arc::new(Handler {
             routers: routers.clone(),
@@ -477,7 +487,7 @@ impl Net {
         p2p_node::set_app_version(app_version::APP_VERSION);
         let socks = Arc::new(SocksManager::new());
         p2p_handlers::install(
-            p2p_handlers::Capabilities::ALL,
+            capabilities,
             p2p_handlers::HostSettings {
                 screencast_restore_token: identity
                     .config
@@ -489,12 +499,14 @@ impl Net {
                         config.save();
                     })
                 }),
-                app_launcher: Some(Arc::new(launch_provider::HostedLauncher::new(
-                    socks.clone(),
-                    identity.config.clone(),
-                    net_tx.clone(),
-                    routers.webvpn.clone(),
-                ))),
+                app_launcher: launch_apps.then(|| {
+                    Arc::new(launch_provider::HostedLauncher::new(
+                        socks.clone(),
+                        identity.config.clone(),
+                        net_tx.clone(),
+                        routers.webvpn.clone(),
+                    )) as Arc<dyn client_core::launcher::AppLaunchProvider>
+                }),
             },
         );
 

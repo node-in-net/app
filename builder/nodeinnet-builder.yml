@@ -20,8 +20,16 @@ services:
     tty: true
     volumes:
       - ../:/home/builder/workdir
+      # The GTK stack: build-node-in-net.sh sets GTK_STACK_HOST to the release gtk-stack.lock pins.
+      - type: bind
+        source: ${GTK_STACK_HOST:-./GTK_STACK_HOST-is-not-set}
+        target: /home/builder/android-rust-gtk4-adwaita
+        read_only: true
+        bind:
+          create_host_path: false
     environment:
       - OUT_DIR
+      - GTK_STACK=/home/builder/android-rust-gtk4-adwaita
   rpm:
     image: fedora41-builder
     working_dir: /home/builder

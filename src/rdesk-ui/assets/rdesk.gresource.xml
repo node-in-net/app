@@ -3,5 +3,6 @@
   <gresource prefix="/com/rdesk-ui/gtk">
     <file compressed="true" preprocess="xml-stripblanks">desktop-mac.svg</file>
     <file compressed="true" preprocess="xml-stripblanks">desktop-pc.svg</file>
+    <file compressed="true" preprocess="xml-stripblanks">fill-height.svg</file>
   </gresource>
 </gresources>

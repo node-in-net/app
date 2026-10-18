@@ -55,6 +55,7 @@
   "rdesk.establish_desc": "Дељење екрана и контрола уноса са шифровањем с краја на крај преко WebRTC-а уз H.264 компресију.",
   "rdesk.establish_title": "Успостави удаљену везу",
   "rdesk.failed": "Неуспешно",
+  "rdesk.fill_height": "Пуна висина",
   "rdesk.gst_available": "🟢 <b>GStreamer PipeWire Source</b>: Доступно",
   "rdesk.gst_missing": "🔴 <b>GStreamer PipeWire Source</b>: Недостаје (Потребно за хостовање тока)",
   "rdesk.gst_success": "🟢 GStreamer успешно инсталиран!",

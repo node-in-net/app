@@ -1,4 +1,8 @@
 {
+  "browser.failed": "Spojenie cez toto zariadenie sa nepodarilo otvoriť.",
+  "browser.hint": "Stránky sa otvárajú cez internetové pripojenie zariadenia %{peer}.",
+  "browser.no_network": "Toto zariadenie nezdieľa svoju sieť.",
+  "browser.open": "Otvoriť prehliadač",
   "app.close": "Zavrieť",
   "app.critical_error": "Kritická chyba",
   "app.my_computer": "Môj počítač",

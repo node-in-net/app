@@ -195,6 +195,8 @@ impl SimpleComponent for TerminalModel {
                 .show_start_title_buttons(false)
                 .show_end_title_buttons(false)
                 .title_widget(&empty_title)
+                // Inside the phone's navigation view it would grow a second back button.
+                .show_back_button(false)
                 .build();
 
             let back_tooltip = init
@@ -211,6 +213,8 @@ impl SimpleComponent for TerminalModel {
             btn_back.connect_clicked(move |_| {
                 let _ = sender_back.output(TerminalOutput::Back);
             });
+            // On the phone the page's own back arrow leads out.
+            btn_back.set_visible(!gtk_dialogs::touch());
             top_bar.pack_start(&btn_back);
 
             let back_separator = gtk::Separator::builder()
@@ -218,6 +222,7 @@ impl SimpleComponent for TerminalModel {
                 .margin_top(8)
                 .margin_bottom(8)
                 .build();
+            back_separator.set_visible(!gtk_dialogs::touch());
             top_bar.pack_start(&back_separator);
 
             let btn_restart = gtk::Button::from_icon_name("view-refresh-symbolic");
@@ -251,7 +256,10 @@ impl SimpleComponent for TerminalModel {
                 .valign(gtk::Align::Center)
                 .tooltip_text(&*crate::i18n::tr("terminal.bg_color_tooltip"))
                 .build();
-            top_bar.pack_end(&bg_color_btn);
+            // A color chooser is a window of its own: on a phone, its own activity.
+            if !gtk_dialogs::touch() {
+                top_bar.pack_end(&bg_color_btn);
+            }
 
             let fg_color_btn = gtk::ColorButton::builder()
                 .rgba(&gdk::RGBA::new(
@@ -264,7 +272,9 @@ impl SimpleComponent for TerminalModel {
                 .valign(gtk::Align::Center)
                 .tooltip_text(&*crate::i18n::tr("terminal.fg_color_tooltip"))
                 .build();
-            top_bar.pack_end(&fg_color_btn);
+            if !gtk_dialogs::touch() {
+                top_bar.pack_end(&fg_color_btn);
+            }
 
             root.append(&top_bar);
 
@@ -360,7 +370,19 @@ impl SimpleComponent for TerminalModel {
             gtk::glib::Propagation::Proceed
         });
         key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let sender_im = sender.clone();
+        let soft_keyboard = gtk_dialogs::im::attach_soft_keyboard(
+            &area,
+            &key_controller,
+            gtk::InputPurpose::Terminal,
+            move |text| {
+                let _ = sender_im.output(TerminalOutput::Input(text.as_bytes().to_vec()));
+            },
+        );
         area.add_controller(key_controller);
+        if let Some(im) = soft_keyboard {
+            area.connect_destroy(move |_| im.focus_out());
+        }
 
         let click_gesture = gtk::GestureClick::new();
         let area_focus = area.clone();
@@ -369,20 +391,15 @@ impl SimpleComponent for TerminalModel {
         });
         area.add_controller(click_gesture);
 
-        let menu_gesture = gtk::GestureClick::new();
-        menu_gesture.set_button(gdk::BUTTON_SECONDARY);
         let area_menu = area.clone();
         let parser_menu = parser.clone();
         let selection_menu = selection.clone();
         let sender_menu = sender.clone();
-        menu_gesture.connect_pressed(move |_, _, x, y| {
+        gtk_dialogs::menu::on_context(&area, move |_, x, y| {
             area_menu.grab_focus();
 
             let popover = gtk::Popover::new();
-            popover.set_parent(&area_menu);
             popover.set_has_arrow(false);
-            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-            popover.connect_closed(|p| p.unparent());
 
             let paste_btn = gtk::Button::builder()
                 .label(crate::i18n::tr("terminal.paste"))
@@ -431,9 +448,14 @@ impl SimpleComponent for TerminalModel {
 
             menu_box.append(&paste_btn);
             popover.set_child(Some(&menu_box));
-            popover.popup();
+            if !gtk_dialogs::menu::sheet_instead(&popover, area_menu.upcast_ref()) {
+                popover.set_parent(&area_menu);
+                popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                popover.connect_closed(|p| p.unparent());
+                popover.popup();
+            }
+            true
         });
-        area.add_controller(menu_gesture);
 
         let drag = gtk::GestureDrag::new();
         drag.set_button(gdk::BUTTON_PRIMARY);

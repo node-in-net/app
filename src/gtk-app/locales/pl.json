@@ -1,4 +1,8 @@
 {
+  "browser.failed": "Nie udało się otworzyć połączenia przez to urządzenie.",
+  "browser.hint": "Strony otwierają się przez połączenie internetowe urządzenia %{peer}.",
+  "browser.no_network": "To urządzenie nie udostępnia swojej sieci.",
+  "browser.open": "Otwórz przeglądarkę",
   "app.close": "Zamknij",
   "app.critical_error": "Błąd krytyczny",
   "app.my_computer": "Mój komputer",

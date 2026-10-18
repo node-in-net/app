@@ -55,6 +55,7 @@
   "rdesk.establish_desc": "Zdieľanie obrazovky a ovládanie so šifrovaním end-to-end cez WebRTC s kompresiou H.264.",
   "rdesk.establish_title": "Nadviazať vzdialené pripojenie",
   "rdesk.failed": "Zlyhalo",
+  "rdesk.fill_height": "Celá výška",
   "rdesk.gst_available": "🟢 <b>GStreamer PipeWire Source</b>: K dispozícii",
   "rdesk.gst_missing": "🔴 <b>GStreamer PipeWire Source</b>: Chýba (vyžadované pre hostovanie streamu)",
   "rdesk.gst_success": "🟢 GStreamer bol úspešne nainštalovaný!",

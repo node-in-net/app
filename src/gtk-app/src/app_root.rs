@@ -5,7 +5,6 @@ use app_headless::ApiCmd;
 use gtk::glib;
 use relm4::prelude::*;
 use std::sync::mpsc;
-use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -38,11 +37,7 @@ pub struct AppModel {
     wizard: Controller<WizardModel>,
     workspace: Controller<WorkspaceModel>,
     cmd: UnboundedSender<ApiCmd>,
-}
-
-enum GuiMsg {
-    Event(serde_json::Value),
-    State(serde_json::Value),
+    storage_asked: bool,
 }
 
 fn is_structural(event: &str) -> bool {
@@ -98,12 +93,29 @@ impl AppModel {
                 });
             }
             self.root_stack.set_visible_child_name("workspace");
-            self.title.set_title("Node.In.Net");
-            if entering {
+            // Once per run, a restored session included: it starts on the workspace.
+            if crate::mobile() && !self.storage_asked {
+                self.storage_asked = true;
                 if self.window.is_mapped() {
-                    self.window.set_size_request(1040, 680);
+                    crate::platform().ensure_storage_access(self.window.upcast_ref());
+                } else {
+                    // The request needs the window's activity, which exists once it is shown.
+                    let asked = std::cell::Cell::new(false);
+                    self.window.connect_map(move |w| {
+                        if !asked.replace(true) {
+                            crate::platform().ensure_storage_access(w.upcast_ref());
+                        }
+                    });
                 }
-                self.window.set_default_size(1040, 680);
+            }
+            if entering {
+                self.title.set_title("Node.In.Net");
+                if !crate::mobile() {
+                    if self.window.is_mapped() {
+                        self.window.set_size_request(1040, 680);
+                    }
+                    self.window.set_default_size(1040, 680);
+                }
             }
         } else {
             self.root_stack.set_visible_child_name("wizard");
@@ -124,10 +136,15 @@ impl SimpleComponent for AppModel {
     type Widgets = ();
 
     fn init_root() -> Self::Root {
+        let (width, height) = if crate::mobile() {
+            (448, 960)
+        } else {
+            (560, 620)
+        };
         adw::ApplicationWindow::builder()
             .title("Node.In.Net")
-            .default_width(560)
-            .default_height(620)
+            .default_width(width)
+            .default_height(height)
             .build()
     }
 
@@ -164,6 +181,7 @@ impl SimpleComponent for AppModel {
 
         let root_stack = gtk::Stack::new();
         root_stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+        root_stack.set_hhomogeneous(!crate::mobile());
         root_stack.add_named(wizard.widget(), Some("wizard"));
         root_stack.add_named(workspace.widget(), Some("workspace"));
         root_stack.set_visible_child_name(if init.restoring {
@@ -194,6 +212,34 @@ impl SimpleComponent for AppModel {
         title_box.append(&version);
         title_box.append(&server_pill);
         let header = adw::HeaderBar::builder().title_widget(&title_box).build();
+        // Mobile: the workspace is a navigation view, and Back pops it before leaving the app.
+        let nav = workspace
+            .widget()
+            .first_child()
+            .and_downcast::<adw::NavigationView>();
+        if let Some(nav) = &nav {
+            let back = gtk::Button::new();
+            back.set_child(Some(&crate::icons::image("arrow-left", 16)));
+            back.add_css_class("flat");
+            back.set_visible(false);
+            {
+                let nav = nav.clone();
+                back.connect_clicked(move |_| {
+                    nav.pop();
+                });
+            }
+            header.pack_start(&back);
+            let title = title.clone();
+            nav.connect_visible_page_notify(move |nav| {
+                let page = nav.visible_page();
+                let nested = page.as_ref().and_then(|p| p.tag()).as_deref() != Some("devices");
+                back.set_visible(nested);
+                title.set_title(&match page.filter(|_| nested) {
+                    Some(p) => p.title().to_string(),
+                    None => "Node.In.Net".to_string(),
+                });
+            });
+        }
         if !cfg!(target_os = "macos") {
             header.pack_end(
                 &gtk::Separator::builder()
@@ -209,58 +255,72 @@ impl SimpleComponent for AppModel {
         toolbar_view.set_content(Some(&root_stack));
         window.set_content(Some(&toolbar_view));
 
-        let cmd_close = init.cmd.clone();
-        window.connect_close_request(move |win| {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-            if cmd_close
-                .send(app_headless::ApiCmd::QueryTunnels { reply: reply_tx })
-                .is_ok()
-            {
-                crate::tokio_rt().spawn(async move {
-                    let _ = tx.send(reply_rx.await.unwrap_or_default());
-                });
-            }
-            let (running, _) = rx
-                .recv_timeout(std::time::Duration::from_millis(300))
-                .unwrap_or_default();
-
-            if running.apps == 0 {
-                web_davserver::unmount_all();
-                return glib::Propagation::Proceed;
-            }
-
-            let dialog = adw::AlertDialog::builder()
-                .heading(i18n::tr("workspace.quit_with_apps_title"))
-                .body(i18n::trf(
-                    "workspace.quit_with_apps_body",
-                    &[("count", &running.apps.to_string())],
-                ))
-                .build();
-            dialog.add_response("cancel", &i18n::tr("workspace.quit_cancel"));
-            dialog.add_response("quit", &i18n::tr("workspace.quit_and_close_apps"));
-            dialog.set_response_appearance("quit", adw::ResponseAppearance::Destructive);
-            dialog.set_default_response(Some("cancel"));
-
-            let win_for_dialog = win.clone();
-            let win_for_quit = win.clone();
-            let cmd_quit = cmd_close.clone();
-            dialog.connect_response(None, move |_, response| {
-                if response == "quit" {
-                    let _ = cmd_quit.send(app_headless::ApiCmd::CloseTunnels);
-                    web_davserver::unmount_all();
-                    win_for_quit.destroy();
+        if let Some(nav) = nav {
+            let root_stack = root_stack.clone();
+            window.connect_close_request(move |win| {
+                let nested = root_stack.visible_child_name().as_deref() == Some("workspace")
+                    && nav.visible_page().and_then(|p| p.tag()).as_deref() != Some("devices");
+                if nested {
+                    nav.pop();
+                } else {
+                    crate::platform().put_away(win.upcast_ref());
                 }
+                glib::Propagation::Stop
             });
-            dialog.present(Some(&win_for_dialog));
-            glib::Propagation::Stop
-        });
+        } else {
+            let cmd_close = init.cmd.clone();
+            window.connect_close_request(move |win| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+                if cmd_close
+                    .send(app_headless::ApiCmd::QueryTunnels { reply: reply_tx })
+                    .is_ok()
+                {
+                    crate::tokio_rt().spawn(async move {
+                        let _ = tx.send(reply_rx.await.unwrap_or_default());
+                    });
+                }
+                let (running, _) = rx
+                    .recv_timeout(std::time::Duration::from_millis(300))
+                    .unwrap_or_default();
 
-        let (gui_tx, gui_rx) = mpsc::channel::<GuiMsg>();
+                if running.apps == 0 {
+                    web_davserver::unmount_all();
+                    return glib::Propagation::Proceed;
+                }
+
+                let dialog = adw::AlertDialog::builder()
+                    .heading(i18n::tr("workspace.quit_with_apps_title"))
+                    .body(i18n::trf(
+                        "workspace.quit_with_apps_body",
+                        &[("count", &running.apps.to_string())],
+                    ))
+                    .build();
+                dialog.add_response("cancel", &i18n::tr("workspace.quit_cancel"));
+                dialog.add_response("quit", &i18n::tr("workspace.quit_and_close_apps"));
+                dialog.set_response_appearance("quit", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+
+                let win_for_dialog = win.clone();
+                let win_for_quit = win.clone();
+                let cmd_quit = cmd_close.clone();
+                dialog.connect_response(None, move |_, response| {
+                    if response == "quit" {
+                        let _ = cmd_quit.send(app_headless::ApiCmd::CloseTunnels);
+                        web_davserver::unmount_all();
+                        win_for_quit.destroy();
+                    }
+                });
+                dialog.present(Some(&win_for_dialog));
+                glib::Propagation::Stop
+            });
+        }
+
+        let events_sender = sender.clone();
         let cmd_b = init.cmd.clone();
         let mut events = init.events.subscribe();
         crate::tokio_rt().spawn(async move {
-            fetch_state(&cmd_b, &gui_tx).await;
+            fetch_state(&cmd_b, &events_sender).await;
             loop {
                 match events.recv().await {
                     Ok(line) => {
@@ -268,62 +328,28 @@ impl SimpleComponent for AppModel {
                             continue;
                         };
                         let structural = v["event"].as_str().map(is_structural).unwrap_or(false);
-                        if gui_tx.send(GuiMsg::Event(v)).is_err() {
-                            break;
-                        }
+                        events_sender.input(AppInput::Event(v));
                         if structural {
-                            fetch_state(&cmd_b, &gui_tx).await;
+                            fetch_state(&cmd_b, &events_sender).await;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        fetch_state(&cmd_b, &gui_tx).await
+                        fetch_state(&cmd_b, &events_sender).await
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
         });
-        let sender_drain = sender.clone();
-        let ui_log = std::env::var_os("NODEINNET_UI_LOG").is_some();
-        let mut last_tick = std::time::Instant::now();
-        let mut worst = Duration::ZERO;
-        let mut drained: u64 = 0;
-        let mut reported = std::time::Instant::now();
-        glib::timeout_add_local(Duration::from_millis(10), move || {
-            if ui_log {
-                let gap = last_tick.elapsed();
-                last_tick = std::time::Instant::now();
-                if gap > worst {
-                    worst = gap;
-                }
-            }
-            while let Ok(msg) = gui_rx.try_recv() {
-                drained += 1;
-                match msg {
-                    GuiMsg::Event(v) => sender_drain.input(AppInput::Event(v)),
-                    GuiMsg::State(v) => sender_drain.input(AppInput::State(v)),
-                }
-            }
-            if ui_log && reported.elapsed() >= Duration::from_secs(2) {
-                eprintln!(
-                    "[ui] drained {drained} msgs, worst tick gap {} ms (timer asks for 10)",
-                    worst.as_millis()
-                );
-                drained = 0;
-                worst = Duration::ZERO;
-                reported = std::time::Instant::now();
-            }
-            glib::ControlFlow::Continue
-        });
 
-        let sender_panic = sender.clone();
+        let panic_sender = sender.clone();
         let ui_rx = init.ui_rx;
-        glib::timeout_add_local(Duration::from_millis(50), move || {
-            while let Ok(crate::UiEvent::Panic(m)) = ui_rx.try_recv() {
-                sender_panic.input(AppInput::Panic(m));
+        std::thread::spawn(move || {
+            while let Ok(crate::UiEvent::Panic(m)) = ui_rx.recv() {
+                panic_sender.input(AppInput::Panic(m));
             }
-            glib::ControlFlow::Continue
         });
 
+        #[cfg(not(target_os = "android"))]
         crate::updater::auto_check(window.clone().upcast());
 
         let model = AppModel {
@@ -336,6 +362,7 @@ impl SimpleComponent for AppModel {
             root_stack,
             wizard,
             workspace,
+            storage_asked: false,
         };
         ComponentParts { model, widgets: () }
     }
@@ -502,11 +529,11 @@ impl SimpleComponent for AppModel {
     }
 }
 
-async fn fetch_state(cmd: &UnboundedSender<ApiCmd>, gui_tx: &mpsc::Sender<GuiMsg>) {
+async fn fetch_state(cmd: &UnboundedSender<ApiCmd>, sender: &ComponentSender<AppModel>) {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let _ = cmd.send(ApiCmd::QueryState { reply: tx });
     if let Ok(v) = rx.await {
-        let _ = gui_tx.send(GuiMsg::State(v));
+        sender.input(AppInput::State(v));
     }
 }
 

@@ -460,60 +460,40 @@ EOF
         export JAVA_HOME=/opt/android-studio/jbr
         export PATH=$JAVA_HOME/bin:$PATH
         export GRADLE_USER_HOME="$WORKDIR/bin/distr/gradle-home-shared"
-        
-        log_info "Java version: $(java --version | head -n 1)"
-        if command -v javac &> /dev/null; then
-            log_info "Java compiler: $(javac -version 2>&1)"
-        else
-            log_error "Java compiler (javac) not found. Cannot proceed."
+
+        # GTK_STACK: the stack nodeinnet-builder.yml mounts; unset, src/android-app/build.sh fetches the release gtk-stack.lock pins.
+        if [ -n "${GTK_STACK:-}" ] && [ ! -d "$GTK_STACK/bin/gtk-stack/apk" ]; then
+            log_error "No GTK stack at GTK_STACK=$GTK_STACK (GTK_STACK_HOST: see builder/build-node-in-net.sh)"
             exit 1
         fi
-        
+
         node ./builder/gen-version.js "$GEN_APP_TYPE" apk
 
-        log_info "Building native library..."
-        npm run build-android-node
-        
-        log_info "Building Android APK with Gradle..."
-        cd ./src/android-app
-        chmod +x ./gradlew
-        
+        # A stable debug signature across machines, so an APK installs over the previous one.
         mkdir -p ~/.android
-        if [ -f "./debug.keystore" ]; then
-            cp "./debug.keystore" ~/.android/debug.keystore
-            log_info "Restored debug.keystore from project directory"
+        if [ -f "./src/android-app/debug.keystore" ]; then
+            cp "./src/android-app/debug.keystore" ~/.android/debug.keystore
         fi
-        
-        ./gradlew assembleRelease assembleDebug
-        
+
+        log_info "Building the Android APK..."
+        npm run build-android
+
         if [ -f ~/.android/debug.keystore ]; then
-            cp ~/.android/debug.keystore "./debug.keystore"
-            log_info "Saved debug.keystore to project directory"
+            cp ~/.android/debug.keystore "./src/android-app/debug.keystore"
         fi
-        
-        cd "$WORKDIR"
+
         mkdir -p "$OUT_DIR"
-        
-        REL_APK_PATH="./src/android-app/app/build/outputs/apk/release/app-release-unsigned.apk"
-        if [ -f "$REL_APK_PATH" ]; then
-            cp "$REL_APK_PATH" "$OUT_DIR/nodeinnet-v${VERSION}-android-release-unsigned.apk"
-            log_success "Release APK created: $OUT_DIR/nodeinnet-v${VERSION}-android-release-unsigned.apk"
-            # Unsigned APKs are usually not published automatically, but let's check
-            register_md5 "Android Release (Unsigned)" "$OUT_DIR/nodeinnet-v${VERSION}-android-release-unsigned.apk"
+        APK_PATH="./bin/android-gtk-app/outputs/apk/release/app-release.apk"
+        if [ -f "$APK_PATH" ]; then
+            cp "$APK_PATH" "$OUT_DIR/nodeinnet-v${VERSION}-android.apk"
+            log_success "APK created: $OUT_DIR/nodeinnet-v${VERSION}-android.apk"
+            register_md5 "Android" "$OUT_DIR/nodeinnet-v${VERSION}-android.apk"
         else
-            log_warning "Release APK not found at $REL_APK_PATH"
-        fi
-        
-        DBG_APK_PATH="./src/android-app/app/build/outputs/apk/debug/app-debug.apk"
-        if [ -f "$DBG_APK_PATH" ]; then
-            cp "$DBG_APK_PATH" "$OUT_DIR/nodeinnet-v${VERSION}-android-debug.apk"
-            log_success "Debug APK created: $OUT_DIR/nodeinnet-v${VERSION}-android-debug.apk"
-            register_md5 "Android Debug" "$OUT_DIR/nodeinnet-v${VERSION}-android-debug.apk"
-        else
-            log_warning "Debug APK not found at $DBG_APK_PATH"
+            log_error "APK not found at $APK_PATH"
+            exit 1
         fi
         ;;
-        
+
     *)
         log_error "Unknown platform: $PLATFORM"
         show_usage

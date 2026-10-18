@@ -10,7 +10,6 @@ members = [
     "src/app-net",
     "src/console-app",
     "src/wasm-node",
-    "src/android-node",
     "src/client-config",
     "submodules/p2p-common/client-core",
     "src/common",
@@ -32,9 +31,24 @@ members = [
     "src/terminal-ui",
     "src/registry-ui",
     "src/updater-ui",
-    "src/dialogs"
+    "src/dialogs",
+    "src/android-app"
 ]
 resolver = "2"
+
+[profile.release]
+strip = true
+
+# The Android app (src/android-app/build.sh): the smallest library, and one that links in a
+# fraction of the time for iterating on a device.
+[profile.android]
+inherits = "release"
+lto = true
+codegen-units = 1
+
+[profile.android-dev]
+inherits = "release"
+lto = "thin"
 
 [workspace.dependencies]
 actix-web = "4.5.1"

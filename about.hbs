@@ -20,6 +20,7 @@ stack. They are not Rust crates, so they are not covered by the generated sectio
 | --- | --- | --- | --- |
 | GTK 4, libadwaita, GLib, Pango, gdk-pixbuf, librsvg | LGPL-2.1-or-later | desktop, all platforms | dynamic |
 | cairo | LGPL-2.1-only OR MPL-1.1 (used under LGPL-2.1) | desktop, all platforms | dynamic |
+| GTK stack for Android, from android-rust-gtk4-adwaita 0.1.0: GTK 4, libadwaita, GLib, Pango, gdk-pixbuf, cairo and the libraries under them | LGPL-2.1-or-later for GTK, libadwaita, GLib, Pango and gdk-pixbuf; cairo as above; the rest as the stack's `THIRD-PARTY.md` lists them | Android | dynamic |
 | GStreamer | LGPL-2.1-or-later | Linux: screen capture, taken from the system. Windows: bundled with GTK, not driven by this application | dynamic |
 | libtiff | libtiff license (BSD-like) | Windows bundle | dynamic |
 | libidn2 | LGPL-3.0-or-later OR GPL-2.0-or-later (used under LGPL-3.0) | Windows bundle | dynamic |
@@ -39,6 +40,14 @@ their equivalents) as dependencies, and everything those pull in — GStreamer,
 PipeWire, the imaging stack — comes from the distribution too. The Windows
 installer bundles the MSYS2 GTK 4 runtime, and the macOS bundle carries the copies
 `dylibbundler` collects.
+
+**The Android APK carries its own GTK stack**, from **android-rust-gtk4-adwaita 0.1.0**
+— https://github.com/savchenko-igor/android-rust-gtk4-adwaita (release `v0.1.0`) — the
+GTK 4 / libadwaita stack for Android these libraries come from. They ship in the APK as
+separate shared libraries, linked dynamically. Its build scripts are MIT OR Apache-2.0;
+its patches to GTK, GLib and gdk-pixbuf are LGPL-2.1-or-later and included in the
+release, under `src/gtk-stack/subprojects/packagefiles/`. The release's `THIRD-PARTY.md`
+lists every library of the stack with its version and license.
 
 **The remote desktop codec is OpenH264**, Cisco's BSD-2-Clause implementation,
 used by `client-core` behind the `feature-rdesk` feature

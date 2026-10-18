@@ -14,6 +14,13 @@ Linux packages (.deb / .rpm / Arch) bundle nothing — GTK, GStreamer, OpenSSL, 
 stack and the rest are declared as dependencies and come from the distribution. Only the
 Windows and macOS bundles contain the components below.
 
+The Android APK carries its own GTK stack, from android-rust-gtk4-adwaita 0.1.0 —
+https://github.com/savchenko-igor/android-rust-gtk4-adwaita — the GTK 4 / libadwaita stack
+for Android its libraries come from; its build scripts are MIT OR Apache-2.0, its patches to
+GTK, GLib and gdk-pixbuf (included in the release, under
+src/gtk-stack/subprojects/packagefiles/) are LGPL-2.1-or-later. THIRD-PARTY-LICENSES.md
+lists it, not this file.
+
 Versions are those read out of the binaries in artifacts/gtk4-win32-x64/, which are the
 MSYS2 mingw-w64 builds. The macOS bundle uses the Homebrew formulae current at build time,
 so its versions differ; the licenses do not.

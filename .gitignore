@@ -9,7 +9,6 @@ package-lock.json
 .DS_Store
 
 # Native generated binaries
-src/android-app/app/src/main/jniLibs/
 src/iphone-app/iphone_node.xcframework/
 src/iphone-app/**/*.xcodeproj/project.xcworkspace/
 src/iphone-app/**/*.xcodeproj/xcuserdata/

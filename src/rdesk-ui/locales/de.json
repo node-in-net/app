@@ -55,6 +55,7 @@
   "rdesk.establish_desc": "Ende-zu-Ende verschlüsselte Bildschirmfreigabe und Eingabesteuerung über WebRTC mit H.264-Kompression.",
   "rdesk.establish_title": "Fernverbindung herstellen",
   "rdesk.failed": "Fehlgeschlagen",
+  "rdesk.fill_height": "Volle Höhe",
   "rdesk.gst_available": "🟢 <b>GStreamer PipeWire-Quelle</b>: Verfügbar",
   "rdesk.gst_missing": "🔴 <b>GStreamer PipeWire-Quelle</b>: Fehlt (erforderlich zum Hosten des Streams)",
   "rdesk.gst_success": "🟢 GStreamer erfolgreich installiert!",

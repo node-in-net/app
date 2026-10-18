@@ -33,7 +33,10 @@ pub(crate) fn service_config(
     shares_rev.set_child(Some(&shares_editor(cmd, config)));
     shares_rev.set_reveal_child(app_net::is_shared(config, ServiceKind::Files));
 
-    for (icon, label, kind) in specs {
+    for (icon, label, kind) in specs
+        .into_iter()
+        .filter(|(_, _, kind)| crate::platform::hostable(*kind))
+    {
         let on_now = app_net::is_shared(config, kind);
         let img = icons::image(icon, 40);
         if !on_now {

@@ -55,6 +55,7 @@
   "rdesk.establish_desc": "Показ екрана та керування введенням із наскрізним шифруванням через WebRTC зі стисненням H.264.",
   "rdesk.establish_title": "Встановити віддалене підключення",
   "rdesk.failed": "Помилка",
+  "rdesk.fill_height": "На всю висоту",
   "rdesk.gst_available": "🟢 <b>Джерело GStreamer PipeWire</b>: Доступно",
   "rdesk.gst_missing": "🔴 <b>Джерело GStreamer PipeWire</b>: Відсутнє (Необхідно для хостингу трансляції)",
   "rdesk.gst_success": "🟢 GStreamer успішно встановлено!",

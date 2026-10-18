@@ -102,38 +102,6 @@ function updateSetupNsi(nsiPath, outFileName) {
 	}
 }
 
-function updateBuildGradle(gradlePath) {
-	if (fs.existsSync(gradlePath)) {
-		let content = fs.readFileSync(gradlePath, 'utf8');
-		let modified = false;
-
-		const vNameRegex = /versionName\s*=\s*"[^"]+"/;
-		if (vNameRegex.test(content)) {
-			content = content.replace(vNameRegex, `versionName = "${version}"`);
-			modified = true;
-		}
-
-		const vCodeRegex = /versionCode\s*=\s*\d+/;
-		if (vCodeRegex.test(content)) {
-			const vParts = version.split('.');
-			let code = 1;
-			if (vParts.length >= 3) {
-				code =
-					parseInt(vParts[0]) * 1000000 +
-					parseInt(vParts[1]) * 1000 +
-					parseInt(vParts[2]);
-			}
-			content = content.replace(vCodeRegex, `versionCode = ${code}`);
-			modified = true;
-		}
-
-		if (modified) {
-			fs.writeFileSync(gradlePath, content, 'utf8');
-			console.log(`Auto-synced Android build.gradle.kts -> v${version}`);
-		}
-	}
-}
-
 // The NSIS installer script + its output name, per app type. The name has to match what
 // builder/build.sh expects (`$CARGO_PKG-$VERSION-1-win64.exe`), so a new installer is added
 // in both places at once. Without the map every app type rewrote the GTK installer.
@@ -146,9 +114,5 @@ const setupByType = {
 if (setupByType[app_type]) {
 	updateSetupNsi(setupByType[app_type].nsi, setupByType[app_type].out);
 }
-
-updateBuildGradle(
-	path.join(__dirname, '..', 'src', 'android-app', 'app', 'build.gradle.kts'),
-);
 
 syncCrateVersions();

@@ -11,6 +11,7 @@ adw = { package = "libadwaita", version = "0.7", features = ["v1_6"] }
 relm4 = { workspace = true }
 nodeinnet-p2p = { workspace = true }
 nodeinnet-i18n = { workspace = true }
+gtk-dialogs = { workspace = true }
 
 [build-dependencies]
 glib-build-tools = "0.20"

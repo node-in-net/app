@@ -101,10 +101,11 @@ first appears:
   what the user did; it must not perform an operation itself.
 - **`console-app`** — the headless node. Console output here is its interface,
   unlike everywhere else.
-- **`android-node`, `wasm-node`** — thin FFI and WebAssembly wrappers around the
-  same core. Logic added here would have to be written twice; put it in
-  `app-core`. The Android UI itself is a Gradle project in `src/android-app`,
-  outside the cargo workspace.
+- **`android-app`** — `gtk-app` itself on Android: the phone layout is a branch
+  of the same code (`Platform::mobile`), and this crate is only the entry point,
+  the JNI calls and the Gradle project.
+- **`wasm-node`** — a thin WebAssembly wrapper around the same core. Logic added
+  here would have to be written twice; put it in `app-core`.
 
 Protocol changes, capability implementations and shared widgets live in the
 submodule repositories, not here.

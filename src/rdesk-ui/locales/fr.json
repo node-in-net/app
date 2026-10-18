@@ -55,6 +55,7 @@
   "rdesk.establish_desc": "Partage d'écran et contrôle des entrées chiffrés de bout en bout via WebRTC avec compression H.264.",
   "rdesk.establish_title": "Établir une connexion distante",
   "rdesk.failed": "Échoué",
+  "rdesk.fill_height": "Pleine hauteur",
   "rdesk.gst_available": "🟢 <b>Source GStreamer PipeWire</b> : Disponible",
   "rdesk.gst_missing": "🔴 <b>Source GStreamer PipeWire</b> : Manquant (Requis pour héberger le flux)",
   "rdesk.gst_success": "🟢 GStreamer installé avec succès !",

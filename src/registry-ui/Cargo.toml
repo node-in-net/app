@@ -13,6 +13,7 @@ relm4 = { workspace = true }
 nodeinnet-p2p = { workspace = true }
 gdk-pixbuf = { version = "0.20", package = "gdk-pixbuf" }
 nodeinnet-i18n = { workspace = true }
+gtk-dialogs = { workspace = true }
 
 [dev-dependencies]
 node-functions = { workspace = true }

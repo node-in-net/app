@@ -22,7 +22,7 @@ pub fn generated_svg_paintable(svg_content: String, size: i32) -> Option<gtk::gd
     Some(paintable)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 fn svg_paintable_uncached(svg_content: &str, size: i32) -> Option<gtk::gdk::Paintable> {
     use resvg::{tiny_skia, usvg};
 
@@ -54,7 +54,7 @@ fn svg_paintable_uncached(svg_content: &str, size: i32) -> Option<gtk::gdk::Pain
     Some(texture.upcast())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "android")))]
 fn svg_paintable_uncached(svg_content: &str, size: i32) -> Option<gtk::gdk::Paintable> {
     let bytes = gtk::glib::Bytes::from(svg_content.as_bytes());
     let stream = gtk::gio::MemoryInputStream::from_bytes(&bytes);
@@ -142,25 +142,18 @@ fn add_right_click_gesture<W: IsA<gtk::Widget>>(
     list_item: &gtk::ListItem,
     shared: &Shared,
     sender: &ComponentSender<FmPanelModel>,
-    btn_delete: &gtk::Button,
     selection_model: &gtk::MultiSelection,
-    btn_refresh: &gtk::Button,
-    btn_chmod: &gtk::Button,
 ) {
-    let gesture = gtk::GestureClick::builder().button(3).build();
     let shared_c = shared.clone();
     let sender_c = sender.clone();
     let item_clone = list_item.clone();
     let selection_model_c = selection_model.clone();
-    let btn_delete_c = btn_delete.clone();
-    let btn_refresh_c = btn_refresh.clone();
-    let btn_chmod_c = btn_chmod.clone();
 
-    gesture.connect_pressed(move |g, _, x, y| {
+    gtk_dialogs::menu::on_context(widget, move |widget, x, y| {
         if let Some(obj) = item_clone.item() {
             if let Ok(entry) = obj.downcast::<crate::file_entry::FileEntry>() {
                 if entry.name() == ".." {
-                    return;
+                    return false;
                 }
                 let pos = item_clone.position();
                 if pos != gtk::INVALID_LIST_POSITION {
@@ -178,24 +171,24 @@ fn add_right_click_gesture<W: IsA<gtk::Widget>>(
                     &shared_c,
                     shared_c.root_path.borrow().clone(),
                     &sender_c,
-                    &btn_delete_c,
-                    &btn_refresh_c,
-                    &btn_chmod_c,
                 );
-                if let Some(widget) = g.widget() {
-                    popover.set_parent(&widget);
-                    g.set_state(gtk::EventSequenceState::Claimed);
+                if !gtk_dialogs::menu::sheet_instead(&popover, widget) {
+                    popover.set_parent(widget);
                     let rect = gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
                     popover.set_pointing_to(Some(&rect));
                     popover.popup();
                 }
+                return true;
             }
         }
+        false
     });
-    widget.add_controller(gesture);
 }
 
 pub fn list_row_metrics(config: &client_config::AppConfig) -> (i32, i32) {
+    if gtk_dialogs::touch() {
+        return (36, 10);
+    }
     match config.get::<String>("ui.fm_list_row_size").as_deref() {
         Some("compact") => (24, 3),
         Some("tiny") => (20, 2),
@@ -230,9 +223,6 @@ pub fn setup_column_view(
     column_view: &gtk::ColumnView,
     shared: &Shared,
     sender: &ComponentSender<FmPanelModel>,
-    btn_delete: gtk::Button,
-    btn_refresh: gtk::Button,
-    btn_chmod: gtk::Button,
     _list_store: gtk::gio::ListStore,
     selection_model: gtk::MultiSelection,
 ) -> (
@@ -246,9 +236,6 @@ pub fn setup_column_view(
     {
         let shared = shared.clone();
         let sender = sender.clone();
-        let btn_delete = btn_delete.clone();
-        let btn_refresh = btn_refresh.clone();
-        let btn_chmod = btn_chmod.clone();
         let selection_model = selection_model.clone();
         name_factory.connect_setup(move |_, obj| {
             let list_item = obj.downcast_ref::<gtk::ListItem>().unwrap();
@@ -273,20 +260,20 @@ pub fn setup_column_view(
                 .build();
             name_vbox.append(&name_label);
             name_vbox.append(&name_entry);
+            // Touch shows no date and size columns: they go under the name.
+            if gtk_dialogs::touch() {
+                let caption = gtk::Label::builder()
+                    .halign(gtk::Align::Start)
+                    .ellipsize(gtk::pango::EllipsizeMode::End)
+                    .css_classes(vec!["caption", "dim-label"])
+                    .build();
+                name_vbox.append(&caption);
+            }
             cell_box.append(&image_wg);
             cell_box.append(&name_vbox);
             list_item.set_child(Some(&cell_box));
 
-            add_right_click_gesture(
-                &cell_box,
-                list_item,
-                &shared,
-                &sender,
-                &btn_delete,
-                &selection_model,
-                &btn_refresh,
-                &btn_chmod,
-            );
+            add_right_click_gesture(&cell_box, list_item, &shared, &sender, &selection_model);
 
             let list_item_inner = list_item.clone();
             let shared_inner = shared.clone();
@@ -381,6 +368,14 @@ pub fn setup_column_view(
             let is_dir = item.is_dir();
             name_label.set_text(&name);
             name_label.set_tooltip_text(Some(&name));
+            if let Some(caption) = name_entry.next_sibling().and_downcast::<gtk::Label>() {
+                let date = item.date();
+                caption.set_text(&if is_dir || name == ".." {
+                    date
+                } else {
+                    format!("{date} · {}", crate::utils::format_size(item.size()))
+                });
+            }
 
             {
                 let mut map = shared.active_widgets.borrow_mut();
@@ -445,9 +440,6 @@ pub fn setup_column_view(
     {
         let shared = shared.clone();
         let sender = sender.clone();
-        let btn_delete = btn_delete.clone();
-        let btn_refresh = btn_refresh.clone();
-        let btn_chmod = btn_chmod.clone();
         let selection_model = selection_model.clone();
         date_factory.connect_setup(move |_, obj| {
             let list_item = obj.downcast_ref::<gtk::ListItem>().unwrap();
@@ -460,16 +452,7 @@ pub fn setup_column_view(
                 .css_classes(vec!["dim-label"])
                 .build();
             list_item.set_child(Some(&date_label));
-            add_right_click_gesture(
-                &date_label,
-                list_item,
-                &shared,
-                &sender,
-                &btn_delete,
-                &selection_model,
-                &btn_refresh,
-                &btn_chmod,
-            );
+            add_right_click_gesture(&date_label, list_item, &shared, &sender, &selection_model);
         });
     }
     {
@@ -493,6 +476,7 @@ pub fn setup_column_view(
         .title(crate::i18n::tr("fm.col_date"))
         .factory(&date_factory)
         .resizable(true)
+        .visible(!gtk_dialogs::touch())
         .build();
     let date_column_weak = date_column.downgrade();
     let cv_w = column_view.downgrade();
@@ -512,9 +496,6 @@ pub fn setup_column_view(
     {
         let shared = shared.clone();
         let sender = sender.clone();
-        let btn_delete = btn_delete.clone();
-        let btn_refresh = btn_refresh.clone();
-        let btn_chmod = btn_chmod.clone();
         let selection_model = selection_model.clone();
         size_factory.connect_setup(move |_, obj| {
             let list_item = obj.downcast_ref::<gtk::ListItem>().unwrap();
@@ -527,16 +508,7 @@ pub fn setup_column_view(
                 .css_classes(vec!["dim-label"])
                 .build();
             list_item.set_child(Some(&size_label));
-            add_right_click_gesture(
-                &size_label,
-                list_item,
-                &shared,
-                &sender,
-                &btn_delete,
-                &selection_model,
-                &btn_refresh,
-                &btn_chmod,
-            );
+            add_right_click_gesture(&size_label, list_item, &shared, &sender, &selection_model);
         });
     }
     {
@@ -562,6 +534,7 @@ pub fn setup_column_view(
         .title(crate::i18n::tr("fm.col_size"))
         .factory(&size_factory)
         .resizable(true)
+        .visible(!gtk_dialogs::touch())
         .build();
     let size_column_weak = size_column.downgrade();
     let cv_w = column_view.downgrade();
@@ -601,9 +574,6 @@ fn column_descending(
 pub fn create_grid_factory(
     shared: &Shared,
     sender: &ComponentSender<FmPanelModel>,
-    btn_delete: gtk::Button,
-    btn_refresh: gtk::Button,
-    btn_chmod: gtk::Button,
     _list_store: gtk::gio::ListStore,
     selection_model: gtk::MultiSelection,
     thumbnailer: Option<ThumbnailFn>,
@@ -615,9 +585,6 @@ pub fn create_grid_factory(
     {
         let shared = shared.clone();
         let sender = sender.clone();
-        let btn_delete = btn_delete.clone();
-        let btn_refresh = btn_refresh.clone();
-        let btn_chmod = btn_chmod.clone();
         let selection_model = selection_model.clone();
         grid_factory.connect_setup(move |_, obj| {
             let list_item = obj.downcast_ref::<gtk::ListItem>().unwrap();
@@ -651,16 +618,7 @@ pub fn create_grid_factory(
             child_box.append(&info_box);
             list_item.set_child(Some(&child_box));
 
-            add_right_click_gesture(
-                &child_box,
-                list_item,
-                &shared,
-                &sender,
-                &btn_delete,
-                &selection_model,
-                &btn_refresh,
-                &btn_chmod,
-            );
+            add_right_click_gesture(&child_box, list_item, &shared, &sender, &selection_model);
 
             let list_item_inner = list_item.clone();
             let shared_inner = shared.clone();

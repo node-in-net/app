@@ -55,6 +55,7 @@
   "rdesk.establish_desc": "Pantalla compartida y control de entrada cifrados de extremo a extremo por WebRTC con compresión H.264.",
   "rdesk.establish_title": "Establecer conexión remota",
   "rdesk.failed": "Error",
+  "rdesk.fill_height": "Altura completa",
   "rdesk.gst_available": "🟢 <b>GStreamer PipeWire Source</b>: Disponible",
   "rdesk.gst_missing": "🔴 <b>GStreamer PipeWire Source</b>: Falta (requerido para alojar la transmisión)",
   "rdesk.gst_success": "¡GStreamer instalado con éxito!",

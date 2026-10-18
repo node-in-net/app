@@ -1,4 +1,8 @@
 {
+  "browser.failed": "Nu s-a putut deschide o conexiune prin acest dispozitiv.",
+  "browser.hint": "Paginile se deschid prin conexiunea la internet a %{peer}.",
+  "browser.no_network": "Acest dispozitiv nu își partajează rețeaua.",
+  "browser.open": "Deschide browserul",
   "app.close": "Închide",
   "app.critical_error": "Eroare critică",
   "app.my_computer": "Calculatorul meu",

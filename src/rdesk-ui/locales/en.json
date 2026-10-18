@@ -55,6 +55,7 @@
   "rdesk.establish_desc": "Zero-trust, end-to-end encrypted screen sharing and input control over WebRTC with H.264 compression.",
   "rdesk.establish_title": "Establish remote connection",
   "rdesk.failed": "Failed",
+  "rdesk.fill_height": "Full height",
   "rdesk.gst_available": "🟢 <b>GStreamer PipeWire Source</b>: Available",
   "rdesk.gst_missing": "🔴 <b>GStreamer PipeWire Source</b>: Missing (Required for hosting stream)",
   "rdesk.gst_success": "🟢 GStreamer successfully installed!",

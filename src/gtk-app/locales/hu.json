@@ -1,4 +1,8 @@
 {
+  "browser.failed": "Nem sikerült kapcsolatot nyitni ezen az eszközön keresztül.",
+  "browser.hint": "Az oldalak %{peer} internetkapcsolatán keresztül nyílnak meg.",
+  "browser.no_network": "Ez az eszköz nem osztja meg a hálózatát.",
+  "browser.open": "Böngésző megnyitása",
   "app.close": "Bezárás",
   "app.critical_error": "Kritikus hiba",
   "app.my_computer": "A számítógépem",

@@ -81,6 +81,8 @@ pub struct WorkspaceModel {
     search: gtk::SearchEntry,
     device_tabs: gtk::Box,
     device_bar: gtk::Box,
+    nav: Option<(adw::NavigationView, adw::NavigationPage)>,
+    browser: Option<BrowserPage>,
     tabs: gtk::Box,
     service_bar: gtk::Box,
     content: gtk::Stack,
@@ -180,16 +182,99 @@ fn apply_filter(list: &gtk::ListBox, needle: &str) {
     let mut index = 0;
     while let Some(row) = list.row_at_index(index) {
         let visible = needle.is_empty()
-            || row
-                .child()
-                .and_then(|c| c.first_child().and_then(|i| i.next_sibling()))
-                .and_then(|text| text.first_child())
-                .and_then(|l| l.downcast::<gtk::Label>().ok())
-                .map(|l| l.text().to_lowercase().contains(needle))
+            || row_name(&row)
+                .map(|name| name.to_lowercase().contains(needle))
                 .unwrap_or(true);
         row.set_visible(visible);
         index += 1;
     }
+}
+
+/// The phone's Network tab: the peer's shared network is used through an in-app browser.
+struct BrowserPage {
+    widget: gtk::Box,
+    hint: gtk::Label,
+    open: gtk::Button,
+}
+
+impl BrowserPage {
+    fn new(cmd: &UnboundedSender<ApiCmd>) -> Self {
+        let widget = gtk::Box::new(gtk::Orientation::Vertical, 18);
+        widget.set_valign(gtk::Align::Center);
+        widget.set_margin_start(24);
+        widget.set_margin_end(24);
+        widget.append(&icons::image("vpn", 72));
+        let hint = gtk::Label::new(None);
+        hint.set_wrap(true);
+        hint.set_justify(gtk::Justification::Center);
+        hint.add_css_class("dim-label");
+        widget.append(&hint);
+        let open = gtk::Button::with_label(&i18n::tr("browser.open"));
+        open.add_css_class("suggested-action");
+        open.add_css_class("pill");
+        open.set_halign(gtk::Align::Center);
+        widget.append(&open);
+        {
+            let cmd = cmd.clone();
+            let hint = hint.clone();
+            open.connect_clicked(move |btn| {
+                let (tx, rx) = oneshot::channel();
+                if cmd.send(ApiCmd::WebVpnOpenProxy { reply: tx }).is_err() {
+                    return;
+                }
+                let window = btn.root().and_downcast::<gtk::Window>();
+                let hint = hint.clone();
+                let cmd = cmd.clone();
+                gtk::glib::spawn_future_local(async move {
+                    let opened = match (rx.await.ok().flatten(), &window) {
+                        (Some(port), Some(window)) => crate::platform().open_browser(window, port),
+                        _ => false,
+                    };
+                    match (opened, window) {
+                        (true, Some(window)) => close_proxy_on_return(&window, cmd),
+                        _ => {
+                            hint.set_text(&i18n::tr("browser.failed"));
+                            let _ = cmd.send(ApiCmd::WebVpnCloseProxies);
+                        }
+                    }
+                });
+            });
+        }
+        Self { widget, hint, open }
+    }
+
+    fn render(&self, peer_name: &str, has_network: bool, connected: bool) {
+        self.hint.set_text(&if has_network {
+            i18n::trf("browser.hint", &[("peer", peer_name)])
+        } else {
+            i18n::tr("browser.no_network")
+        });
+        self.open.set_sensitive(has_network && connected);
+    }
+}
+
+/// The browser runs in an activity of its own; once the app's window has focus again it is
+/// closed, and the proxy it used must not stay open to every app on the phone.
+fn close_proxy_on_return(window: &gtk::Window, cmd: UnboundedSender<ApiCmd>) {
+    let Some(toplevel) = window.surface().and_downcast::<gtk::gdk::Toplevel>() else {
+        return;
+    };
+    let left = Rc::new(Cell::new(false));
+    let handler: Rc<RefCell<Option<gtk::glib::SignalHandlerId>>> = Rc::default();
+    let id = {
+        let handler = handler.clone();
+        toplevel.connect_state_notify(move |t| {
+            if !t.state().contains(gtk::gdk::ToplevelState::FOCUSED) {
+                left.set(true);
+            } else if left.get() {
+                let _ = cmd.send(ApiCmd::WebVpnCloseProxies);
+                if let Some(id) = handler.take() {
+                    t.disconnect(id);
+                }
+            }
+        })
+    };
+    handler.replace(Some(id));
 }
 
 fn bar_with_rule(row: &gtk::Box) -> gtk::Box {
@@ -197,6 +282,14 @@ fn bar_with_rule(row: &gtk::Box) -> gtk::Box {
     bar.append(row);
     bar.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     bar
+}
+
+fn row_name(row: &gtk::ListBoxRow) -> Option<String> {
+    row.child()
+        .and_then(|c| c.first_child().and_then(|i| i.next_sibling()))
+        .and_then(|text| text.first_child())
+        .and_then(|l| l.downcast::<gtk::Label>().ok())
+        .map(|l| l.text().to_string())
 }
 
 fn offline_placeholder() -> gtk::Widget {
@@ -473,6 +566,24 @@ impl WorkspaceModel {
         }
         self.service_bar
             .set_visible(self.tabs.first_child().is_some());
+        if let Some((nav, device_page)) = &self.nav {
+            match selected {
+                Some(dev) => {
+                    device_page.set_title(&dev.name);
+                    self.files.set_remote_name(&dev.name);
+                }
+                // The device went away: leave its page, but not Settings opened from the list.
+                None => {
+                    let stack = nav.navigation_stack();
+                    let showing_device = (0..stack.n_items())
+                        .filter_map(|i| stack.item(i).and_downcast::<adw::NavigationPage>())
+                        .any(|page| &page == device_page);
+                    if showing_device {
+                        nav.pop_to_tag("devices");
+                    }
+                }
+            }
+        }
 
         let session = Session {
             device: selected.map(|d| d.id.clone()),
@@ -532,6 +643,9 @@ impl WorkspaceModel {
         let connected = selected
             .map(|d| matches!(d.link, app_core::workspace::LinkState::Connected))
             .unwrap_or(false);
+        if let Some(browser) = &self.browser {
+            browser.render(&peer_name, has_peer, connected);
+        }
         let _ = self.network.sender().send(NetworkInput::SetContext {
             peer_name,
             has_peer,
@@ -583,9 +697,12 @@ impl SimpleComponent for WorkspaceModel {
         let cmd = init.cmd;
         let config = init.config;
 
+        let mobile = crate::mobile();
         let rail = gtk::Box::new(gtk::Orientation::Vertical, 0);
         rail.add_css_class("rail");
-        rail.set_width_request(RAIL_MIN);
+        if !mobile {
+            rail.set_width_request(RAIL_MIN);
+        }
 
         let account_bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         account_bar.set_margin_top(10);
@@ -607,7 +724,15 @@ impl SimpleComponent for WorkspaceModel {
             let config = config.clone();
             gear.connect_clicked(move |btn| {
                 let window = btn.root().and_downcast::<gtk::Window>();
-                crate::settings::open_settings_dialog(window, &cmd, &config);
+                let nav = btn
+                    .ancestor(adw::NavigationView::static_type())
+                    .and_downcast::<adw::NavigationView>();
+                match (nav, &window) {
+                    (Some(nav), Some(window)) => {
+                        nav.push(&crate::settings::settings_page(window, &cmd, &config))
+                    }
+                    _ => crate::settings::open_settings_dialog(window, &cmd, &config),
+                }
             });
         }
         let signout = gtk::Button::new();
@@ -677,7 +802,9 @@ impl SimpleComponent for WorkspaceModel {
         tunnels_list.add_css_class("navigation-sidebar");
         tunnels_box.append(&tunnels_list);
         tunnels_box.set_visible(false);
-        rail.append(&tunnels_box);
+        if !mobile {
+            rail.append(&tunnels_box);
+        }
 
         let mounts_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         mounts_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -692,9 +819,11 @@ impl SimpleComponent for WorkspaceModel {
         mounts_list.add_css_class("navigation-sidebar");
         mounts_box.append(&mounts_list);
         mounts_box.set_visible(false);
-        rail.append(&mounts_box);
+        if !mobile {
+            rail.append(&mounts_box);
+        }
 
-        {
+        if !mobile {
             let cmd = cmd.clone();
             let sender = sender.clone();
             gtk::glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
@@ -722,39 +851,34 @@ impl SimpleComponent for WorkspaceModel {
             .revealed(capture_deps_missing(&config))
             .build();
         ws.append(&deps_banner);
-        {
-            let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
-            deps_banner.connect_button_clicked(move |b| {
-                b.set_button_label(None::<&str>);
-                b.set_title(&i18n::tr("deps.installing"));
-                let tx = tx.clone();
-                crate::tokio_rt().spawn(async move {
-                    let _ = tx.send(node_functions::desktop::run_gstreamer_installer().await);
-                });
+        deps_banner.connect_button_clicked(move |b| {
+            b.set_button_label(None::<&str>);
+            b.set_title(&i18n::tr("deps.installing"));
+            let (tx, rx) = oneshot::channel();
+            crate::tokio_rt().spawn(async move {
+                let _ = tx.send(node_functions::desktop::run_gstreamer_installer().await);
             });
-            let banner = deps_banner.clone();
-            gtk::glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-                if let Ok(res) = rx.try_recv() {
-                    match res {
-                        Ok(()) => {
-                            banner.set_title(&i18n::tr("deps.installed_restart"));
-                            banner.set_button_label(Some(&i18n::tr("deps.restart")));
-                            let handled = std::cell::Cell::new(false);
-                            banner.connect_button_clicked(move |_| {
-                                if !handled.replace(true) {
-                                    nodeinnet_utils::app::restart_app();
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            banner.set_title(&e);
-                            banner.set_button_label(Some(&i18n::tr("deps.install")));
-                        }
+            let banner = b.clone();
+            gtk::glib::spawn_future_local(async move {
+                match rx.await {
+                    Ok(Ok(())) => {
+                        banner.set_title(&i18n::tr("deps.installed_restart"));
+                        banner.set_button_label(Some(&i18n::tr("deps.restart")));
+                        let handled = std::cell::Cell::new(false);
+                        banner.connect_button_clicked(move |_| {
+                            if !handled.replace(true) {
+                                nodeinnet_utils::app::restart_app();
+                            }
+                        });
                     }
+                    Ok(Err(e)) => {
+                        banner.set_title(&e);
+                        banner.set_button_label(Some(&i18n::tr("deps.install")));
+                    }
+                    Err(_) => {}
                 }
-                gtk::glib::ControlFlow::Continue
             });
-        }
+        });
 
         let device_tabs = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         device_tabs.set_margin_top(8);
@@ -762,14 +886,33 @@ impl SimpleComponent for WorkspaceModel {
         device_tabs.set_margin_start(14);
         device_tabs.set_margin_end(14);
         let device_bar = bar_with_rule(&device_tabs);
-        ws.append(&device_bar);
+        if !mobile {
+            ws.append(&device_bar);
+        }
 
         let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        tabs.set_margin_top(8);
-        tabs.set_margin_start(14);
-        tabs.set_margin_end(14);
-        tabs.set_margin_bottom(8);
-        let service_bar = bar_with_rule(&tabs);
+        let service_bar = if mobile {
+            // The phone: the same tabs on top, panned sideways when they do not fit.
+            tabs.add_css_class("service-bar");
+            tabs.set_margin_top(6);
+            tabs.set_margin_start(8);
+            tabs.set_margin_end(8);
+            tabs.set_margin_bottom(6);
+            let scroller = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::External)
+                .vscrollbar_policy(gtk::PolicyType::Never)
+                .child(&tabs)
+                .build();
+            let row = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            row.append(&scroller);
+            bar_with_rule(&row)
+        } else {
+            tabs.set_margin_top(8);
+            tabs.set_margin_start(14);
+            tabs.set_margin_end(14);
+            tabs.set_margin_bottom(8);
+            bar_with_rule(&tabs)
+        };
         ws.append(&service_bar);
 
         let terminal = build_terminal(cmd.clone(), config.clone());
@@ -779,8 +922,11 @@ impl SimpleComponent for WorkspaceModel {
         let registry = build_registry(cmd.clone());
         let sysinfo = build_sysinfo(cmd.clone());
 
+        let browser = mobile.then(|| BrowserPage::new(&cmd));
         let content = gtk::Stack::new();
         content.set_vexpand(true);
+        // A hidden service must not widen the phone's page: the remote desktop alone asks ~1000px.
+        content.set_hhomogeneous(!mobile);
         content.add_named(
             &service_placeholder("connect", &i18n::tr("workspace.select_device")),
             Some("empty"),
@@ -794,9 +940,14 @@ impl SimpleComponent for WorkspaceModel {
                 ServiceKind::Terminal => {
                     content.add_named(terminal.widget(), Some(tab_page_name(kind)));
                 }
-                ServiceKind::Network => {
-                    content.add_named(network.widget(), Some(tab_page_name(kind)));
-                }
+                ServiceKind::Network => match &browser {
+                    Some(page) => {
+                        content.add_named(&page.widget, Some(tab_page_name(kind)));
+                    }
+                    None => {
+                        content.add_named(network.widget(), Some(tab_page_name(kind)));
+                    }
+                },
                 ServiceKind::Desktop => {
                     content.add_named(desktop.widget(), Some(tab_page_name(kind)));
                 }
@@ -810,7 +961,11 @@ impl SimpleComponent for WorkspaceModel {
         }
         ws.append(&content);
 
-        let home = gtk::glib::home_dir();
+        let home = if mobile {
+            std::path::PathBuf::from(crate::platform().storage_root())
+        } else {
+            gtk::glib::home_dir()
+        };
         let home_s = home.to_string_lossy().to_string();
         let root_s = home
             .ancestors()
@@ -824,6 +979,12 @@ impl SimpleComponent for WorkspaceModel {
                 rel.trim_start_matches(['/', '\\']).replace('\\', "/")
             )
         };
+        // The phone's files start at shared storage, which the app may not read above.
+        let (root_s, start) = if mobile {
+            (home_s.clone(), "/".to_string())
+        } else {
+            (root_s, start)
+        };
         let _ = cmd.send(ApiCmd::FmSetLocalResource {
             side: Side::Left,
             path: root_s,
@@ -835,22 +996,35 @@ impl SimpleComponent for WorkspaceModel {
             });
         }
 
-        let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
-        paned.set_start_child(Some(&rail));
-        paned.set_end_child(Some(&ws));
-        paned.set_resize_start_child(false);
-        paned.set_shrink_start_child(false);
-        paned.set_shrink_end_child(false);
-        paned.set_position(224);
-        paned.connect_position_notify(|p| {
-            let pos = p.position();
-            let clamped = pos.clamp(RAIL_MIN, RAIL_MAX);
-            if pos != clamped {
-                p.set_position(clamped);
-            }
-        });
-        paned.set_vexpand(true);
-        root.append(&paned);
+        let nav = if mobile {
+            let nav = adw::NavigationView::new();
+            nav.set_vexpand(true);
+            nav.add(&adw::NavigationPage::with_tag(
+                &rail,
+                &i18n::tr("workspace.devices"),
+                "devices",
+            ));
+            root.append(&nav);
+            Some((nav, adw::NavigationPage::with_tag(&ws, "", "device")))
+        } else {
+            let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
+            paned.set_start_child(Some(&rail));
+            paned.set_end_child(Some(&ws));
+            paned.set_resize_start_child(false);
+            paned.set_shrink_start_child(false);
+            paned.set_shrink_end_child(false);
+            paned.set_position(224);
+            paned.connect_position_notify(|p| {
+                let pos = p.position();
+                let clamped = pos.clamp(RAIL_MIN, RAIL_MAX);
+                if pos != clamped {
+                    p.set_position(clamped);
+                }
+            });
+            paned.set_vexpand(true);
+            root.append(&paned);
+            None
+        };
 
         let device_ids: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let mount_rows: Rc<RefCell<Vec<MountInfo>>> = Rc::new(RefCell::new(Vec::new()));
@@ -870,6 +1044,7 @@ impl SimpleComponent for WorkspaceModel {
         {
             let cmd = cmd.clone();
             let device_ids = device_ids.clone();
+            let nav = nav.clone();
             device_list.connect_row_activated(move |_, row| {
                 let index = row.index();
                 if index >= 0 {
@@ -878,6 +1053,10 @@ impl SimpleComponent for WorkspaceModel {
                         let _ = cmd.send(ApiCmd::OpenService {
                             kind: ServiceKind::Files,
                         });
+                        if let Some((nav, device_page)) = &nav {
+                            device_page.set_title(&row_name(row).unwrap_or_default());
+                            nav.push(device_page);
+                        }
                     }
                 }
             });
@@ -906,6 +1085,8 @@ impl SimpleComponent for WorkspaceModel {
             search,
             device_tabs,
             device_bar,
+            nav,
+            browser,
             tabs,
             service_bar,
             content,
@@ -1024,18 +1205,7 @@ fn build_terminal(
             TerminalOutput::Back => {}
         });
 
-    let (byte_tx, byte_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let term_sender = terminal.sender().clone();
-    gtk::glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
-        let mut batch = Vec::new();
-        while let Ok(data) = byte_rx.try_recv() {
-            batch.extend_from_slice(&data);
-        }
-        if !batch.is_empty() {
-            let _ = term_sender.send(TerminalInput::Feed(batch));
-        }
-        gtk::glib::ControlFlow::Continue
-    });
     crate::tokio_rt().spawn(async move {
         let (rtx, rrx) = oneshot::channel::<Arc<TerminalRouter>>();
         if cmd
@@ -1049,7 +1219,7 @@ fn build_terminal(
         loop {
             match brx.recv().await {
                 Ok(data) => {
-                    if byte_tx.send(data).is_err() {
+                    if term_sender.send(TerminalInput::Feed(data)).is_err() {
                         break;
                     }
                 }
@@ -1093,52 +1263,55 @@ fn build_network(
 
     let net_sender = network.sender().clone();
     let last: Arc<std::sync::Mutex<Option<NetStats>>> = Arc::new(std::sync::Mutex::new(None));
-    gtk::glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
-        let cmd = cmd.clone();
-        let net_sender = net_sender.clone();
-        let last = last.clone();
-        crate::tokio_rt().spawn(async move {
-            let (tx, rx) = oneshot::channel();
-            if cmd.send(ApiCmd::QueryWebVpn { reply: tx }).is_err() {
-                return;
-            }
-            let Ok(state) = rx.await else { return };
-            let live = state
-                .totals
-                .streams_opened
-                .saturating_sub(state.totals.streams_closed);
-            let now = (
-                state.active,
-                live,
-                state.totals.bytes_down,
-                state.totals.bytes_up,
-            );
-            let changed = {
-                let mut guard = last.lock().expect("net stats");
-                if guard.as_ref() == Some(&now) {
-                    false
-                } else {
-                    *guard = Some(now);
-                    true
+    gtk_dialogs::gate::while_mapped(
+        network.widget(),
+        std::time::Duration::from_secs(1),
+        move || {
+            let cmd = cmd.clone();
+            let net_sender = net_sender.clone();
+            let last = last.clone();
+            crate::tokio_rt().spawn(async move {
+                let (tx, rx) = oneshot::channel();
+                if cmd.send(ApiCmd::QueryWebVpn { reply: tx }).is_err() {
+                    return;
                 }
-            };
-            if changed {
-                let _ = net_sender.send(NetworkInput::Totals {
-                    sockets: live as usize,
-                    rx: now.2,
-                    tx: now.3,
-                });
-            }
+                let Ok(state) = rx.await else { return };
+                let live = state
+                    .totals
+                    .streams_opened
+                    .saturating_sub(state.totals.streams_closed);
+                let now = (
+                    state.active,
+                    live,
+                    state.totals.bytes_down,
+                    state.totals.bytes_up,
+                );
+                let changed = {
+                    let mut guard = last.lock().expect("net stats");
+                    if guard.as_ref() == Some(&now) {
+                        false
+                    } else {
+                        *guard = Some(now);
+                        true
+                    }
+                };
+                if changed {
+                    let _ = net_sender.send(NetworkInput::Totals {
+                        sockets: live as usize,
+                        rx: now.2,
+                        tx: now.3,
+                    });
+                }
 
-            let (tx, rx) = oneshot::channel();
-            if cmd.send(ApiCmd::QueryRemoteApps { reply: tx }).is_ok() {
-                if let Ok(view) = rx.await {
-                    let _ = net_sender.send(NetworkInput::RemoteApps(view));
+                let (tx, rx) = oneshot::channel();
+                if cmd.send(ApiCmd::QueryRemoteApps { reply: tx }).is_ok() {
+                    if let Ok(view) = rx.await {
+                        let _ = net_sender.send(NetworkInput::RemoteApps(view));
+                    }
                 }
-            }
-        });
-        gtk::glib::ControlFlow::Continue
-    });
+            });
+        },
+    );
 
     network
 }
@@ -1189,35 +1362,38 @@ fn build_desktop(cmd: UnboundedSender<ApiCmd>) -> relm4::Controller<RemoteDeskto
     let mut router: Option<Arc<DesktopRouter>> = None;
     let mut last_seq = 0u64;
     let mut last_screen: Option<(usize, usize)> = None;
-    gtk::glib::timeout_add_local(std::time::Duration::from_millis(33), move || {
-        if router.is_none() {
-            if let Ok(r) = router_rx.try_recv() {
-                router = Some(r);
-            }
-        }
-        if let Some(r) = &router {
-            let screen = r.screen_size();
-            if screen.is_some() && screen != last_screen {
-                last_screen = screen;
-                if let Some((width, height)) = screen {
-                    let _ = desk_sender.send(RemoteDesktopInput::ScreenSize { width, height });
+    gtk_dialogs::gate::while_mapped(
+        desktop.widget(),
+        std::time::Duration::from_millis(33),
+        move || {
+            if router.is_none() {
+                if let Ok(r) = router_rx.try_recv() {
+                    router = Some(r);
                 }
             }
-            let seq = r.frame_seq();
-            if seq != last_seq {
-                last_seq = seq;
-                if let Some((w, h, bgra)) = r.latest_frame() {
-                    let _ = desk_sender.send(RemoteDesktopInput::Frame {
-                        width: w as usize,
-                        height: h as usize,
-                        bgra,
-                        compressed_len: 0,
-                    });
+            if let Some(r) = &router {
+                let screen = r.screen_size();
+                if screen.is_some() && screen != last_screen {
+                    last_screen = screen;
+                    if let Some((width, height)) = screen {
+                        let _ = desk_sender.send(RemoteDesktopInput::ScreenSize { width, height });
+                    }
+                }
+                let seq = r.frame_seq();
+                if seq != last_seq {
+                    last_seq = seq;
+                    if let Some((w, h, bgra)) = r.latest_frame() {
+                        let _ = desk_sender.send(RemoteDesktopInput::Frame {
+                            width: w as usize,
+                            height: h as usize,
+                            bgra,
+                            compressed_len: 0,
+                        });
+                    }
                 }
             }
-        }
-        gtk::glib::ControlFlow::Continue
-    });
+        },
+    );
 
     desktop
 }

@@ -55,6 +55,7 @@
   "rdesk.establish_desc": "Partajare ecran și control al intrărilor criptate end-to-end prin WebRTC cu compresie H.264.",
   "rdesk.establish_title": "Stabilește o conexiune la distanță",
   "rdesk.failed": "Eșuat",
+  "rdesk.fill_height": "Înălțime completă",
   "rdesk.gst_available": "🟢 <b>GStreamer PipeWire Source</b>: Disponibil",
   "rdesk.gst_missing": "🔴 <b>GStreamer PipeWire Source</b>: Lipsește (Necesar pentru găzduirea fluxului)",
   "rdesk.gst_success": "🟢 GStreamer instalat cu succes!",

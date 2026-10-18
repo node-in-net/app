@@ -20,6 +20,14 @@ docker compose -f ./builder/nodeinnet-builder.yml run --rm exe gtk-app
 docker compose -f ./builder/nodeinnet-builder.yml run --rm zst gtk-app
 docker compose -f ./builder/nodeinnet-builder.yml run --rm deb gtk-app
 docker compose -f ./builder/nodeinnet-builder.yml run --rm rpm gtk-app
+
+# The apk service mounts the GTK stack: GTK_STACK (a checkout) or the release gtk-stack.lock pins,
+# fetched when it is not there. Only the apk needs it, so the other packages come first.
+if [ -z "${GTK_STACK_HOST:-}" ]; then
+    GTK_STACK_HOST="$(source ./src/android-app/gtk-stack.bash &&
+        resolve_gtk_stack ./src/android-app/fetch-gtk-stack.sh ./gtk-stack.lock arm64-v8a && echo "$GTK_STACK")"
+    export GTK_STACK_HOST
+fi
 docker compose -f ./builder/nodeinnet-builder.yml run --rm apk android-app
 
 echo ""

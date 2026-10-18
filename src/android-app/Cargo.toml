@@ -1,0 +1,17 @@
+[package]
+name = "nodeinnet-android"
+version = "0.1.0"
+edition = "2021"
+description = "node.in.net Android app: the GTK client on GTK's Android runtime (see build.sh)."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+# libnodeinnet_android.so: GTK's Android runtime dlopens it and runs main() on its GTK thread.
+name = "nodeinnet_android"
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+nodeinnet-gtk = { path = "../gtk-app" }
+gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
+jni = "0.21.1"

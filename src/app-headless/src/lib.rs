@@ -269,6 +269,12 @@ pub enum ApiCmd {
     WebVpnLaunch {
         exec_cmd: String,
     },
+    /// A local SOCKS port through the selected peer's shared network, for the app's own use
+    /// (the phone's in-app browser).
+    WebVpnOpenProxy {
+        reply: oneshot::Sender<Option<u16>>,
+    },
+    WebVpnCloseProxies,
 
     RegistryRequestKeys {
         path: String,
@@ -813,6 +819,24 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
                 _ => eprintln!("[net] ✗ no peer with shared network selected"),
             }
         }
+
+        WebVpnOpenProxy { reply } => {
+            let peer = app.workspace.selected_device().map(|d| d.id.clone());
+            let resource = app.webvpn.state().resource_id;
+            let net_tx = app.net.as_ref().map(|n| n.net_tx.clone());
+            let port = match (peer, resource, net_tx) {
+                (Some(peer), Some(resource), Some(net_tx)) => {
+                    app.webvpn.start();
+                    app.socks
+                        .open_proxy(&peer, &resource, net_tx, app.webvpn.router())
+                        .map_err(|e| eprintln!("[net] ✗ could not open a proxy: {e}"))
+                        .ok()
+                }
+                _ => None,
+            };
+            let _ = reply.send(port);
+        }
+        WebVpnCloseProxies => app.socks.release_proxies(),
 
         RegistryRequestKeys { path } => app.reg.request_keys(path).await,
         RegistryCreateKey {
@@ -2030,36 +2054,8 @@ pub fn start_on_port<F>(port: u16, build: F) -> Headless
 where
     F: FnOnce() -> App + Send + 'static,
 {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let (ev_tx, _) = broadcast::channel(1024);
-
-    {
-        let events = ev_tx.clone();
-        let self_cmd = cmd_tx.clone();
-        std::thread::Builder::new()
-            .name("app-core-loop".into())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("core runtime");
-                tokio::task::LocalSet::new().block_on(&rt, async move {
-                    let mut app = build();
-                    app.self_cmd = Some(self_cmd.clone());
-                    tokio::task::spawn_local(async move {
-                        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
-                        loop {
-                            tick.tick().await;
-                            if self_cmd.send(ApiCmd::ReapTick).is_err() {
-                                break;
-                            }
-                        }
-                    });
-                    core_loop(app, cmd_rx, events).await;
-                });
-            })
-            .expect("spawn core loop");
-    }
+    let core = start_core(build);
+    let (cmd_tx, ev_tx) = (core.cmd, core.events);
 
     let (port_tx, port_rx) = std::sync::mpsc::channel();
     {
@@ -2114,6 +2110,48 @@ where
     let port = port_rx.recv().expect("headless server failed to start");
     Headless {
         port,
+        cmd: cmd_tx,
+        events: ev_tx,
+    }
+}
+
+pub fn start_core<F>(build: F) -> Headless
+where
+    F: FnOnce() -> App + Send + 'static,
+{
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+    let (ev_tx, _) = broadcast::channel(1024);
+
+    {
+        let events = ev_tx.clone();
+        let self_cmd = cmd_tx.clone();
+        std::thread::Builder::new()
+            .name("app-core-loop".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("core runtime");
+                tokio::task::LocalSet::new().block_on(&rt, async move {
+                    let mut app = build();
+                    app.self_cmd = Some(self_cmd.clone());
+                    tokio::task::spawn_local(async move {
+                        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                        loop {
+                            tick.tick().await;
+                            if self_cmd.send(ApiCmd::ReapTick).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    core_loop(app, cmd_rx, events).await;
+                });
+            })
+            .expect("spawn core loop");
+    }
+
+    Headless {
+        port: 0,
         cmd: cmd_tx,
         events: ev_tx,
     }

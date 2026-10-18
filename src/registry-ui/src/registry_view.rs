@@ -92,9 +92,12 @@ impl RegistryModel {
             if !armed.get() {
                 return glib::ControlFlow::Break;
             }
-            let width = paned.width();
-            if width > 0 {
-                paned.set_position(width / 2);
+            let length = match paned.orientation() {
+                gtk::Orientation::Vertical => paned.height(),
+                _ => paned.width(),
+            };
+            if length > 0 {
+                paned.set_position(length / 2);
                 armed.set(false);
                 glib::ControlFlow::Break
             } else {
@@ -144,6 +147,8 @@ impl SimpleComponent for RegistryModel {
             .show_start_title_buttons(false)
             .show_end_title_buttons(false)
             .title_widget(&empty_title)
+            // Inside the phone's navigation view it would grow a second back button.
+            .show_back_button(false)
             .build();
 
         let btn_back = gtk::Button::builder()
@@ -157,6 +162,8 @@ impl SimpleComponent for RegistryModel {
         btn_back.connect_clicked(move |_| {
             let _ = sender_back.output(RegistryOutput::Back);
         });
+        // On the phone the page's own back arrow leads out.
+        btn_back.set_visible(!gtk_dialogs::touch());
         header.pack_start(&btn_back);
 
         header.pack_start(
@@ -206,8 +213,14 @@ impl SimpleComponent for RegistryModel {
         header.set_visible(init.show_toolbar);
         root.append(&header);
 
+        // A phone stacks keys over values: side by side they do not fit its width.
+        let touch = gtk_dialogs::touch();
         let paned = gtk::Paned::builder()
-            .orientation(gtk::Orientation::Horizontal)
+            .orientation(if touch {
+                gtk::Orientation::Vertical
+            } else {
+                gtk::Orientation::Horizontal
+            })
             .hexpand(true)
             .vexpand(true)
             .build();
@@ -245,7 +258,20 @@ impl SimpleComponent for RegistryModel {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .child(&tree_view)
             .build();
-        scrolled_tree.set_size_request(250, -1);
+        if touch {
+            scrolled_tree.set_size_request(-1, 160);
+            // A tap opens a key: the expander arrow is too small for a finger.
+            tree_view.set_activate_on_single_click(true);
+            tree_view.connect_row_activated(|view, path, _| {
+                if view.row_expanded(path) {
+                    view.collapse_row(path);
+                } else {
+                    view.expand_row(path, false);
+                }
+            });
+        } else {
+            scrolled_tree.set_size_request(250, -1);
+        }
         paned.set_start_child(Some(&scrolled_tree));
 
         let list_box = gtk::ListBox::builder()
@@ -305,7 +331,7 @@ impl SimpleComponent for RegistryModel {
                 return;
             };
 
-            let window = list.root().and_downcast::<gtk::Window>().unwrap();
+            let window = list.root().and_downcast::<gtk::Window>();
             let val_display_name = if val_info.name.is_empty() {
                 crate::i18n::tr("registry.default_value")
             } else {
@@ -315,12 +341,12 @@ impl SimpleComponent for RegistryModel {
                 "registry.editing_format",
                 &[("name", &*(val_display_name).to_string())],
             );
-            let dialog = adw::MessageDialog::builder()
-                .heading(&*crate::i18n::tr("registry.edit_value_title"))
-                .body(&*editing_body)
-                .transient_for(&window)
-                .modal(true)
-                .build();
+            let dialog = gtk_dialogs::Alert::new(
+                window.as_ref(),
+                Some(&crate::i18n::tr("registry.edit_value_title")),
+                Some(&editing_body),
+            );
+            dialog.set_modal(true);
 
             let type_string = match &val_info.data {
                 RegistryValueData::String(_) => crate::i18n::tr("registry.type_sz"),
@@ -370,7 +396,7 @@ impl SimpleComponent for RegistryModel {
             let path = path_edit.borrow().clone();
             let val_clone = val_info.clone();
 
-            dialog.connect_response(None, move |d, response| {
+            dialog.connect_response(move |response| {
                 if response == "save" {
                     let new_text = entry.text().to_string();
                     let new_data = match &val_clone.data {
@@ -411,7 +437,6 @@ impl SimpleComponent for RegistryModel {
                         data: new_data,
                     });
                 }
-                d.close();
             });
 
             dialog.present();
@@ -431,7 +456,7 @@ impl SimpleComponent for RegistryModel {
             let Some(val_name) = selected_delete.borrow().clone() else {
                 return;
             };
-            let window = btn.root().and_downcast::<gtk::Window>().unwrap();
+            let window = btn.root().and_downcast::<gtk::Window>();
             let val_display_name = if val_name.is_empty() {
                 crate::i18n::tr("registry.default_value")
             } else {
@@ -441,19 +466,19 @@ impl SimpleComponent for RegistryModel {
                 "registry.delete_confirm_format",
                 &[("name", &*(val_display_name).to_string())],
             );
-            let dialog = adw::MessageDialog::builder()
-                .heading(&*crate::i18n::tr("registry.delete_value_title"))
-                .body(&*delete_confirm_body)
-                .transient_for(&window)
-                .modal(true)
-                .build();
+            let dialog = gtk_dialogs::Alert::new(
+                window.as_ref(),
+                Some(&crate::i18n::tr("registry.delete_value_title")),
+                Some(&delete_confirm_body),
+            );
+            dialog.set_modal(true);
             dialog.add_response("cancel", &crate::i18n::tr("registry.cancel_btn"));
             dialog.add_response("delete", &crate::i18n::tr("registry.delete_btn"));
             dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
 
             let sender_resp = sender_delete.clone();
             let path = path_delete.borrow().clone();
-            dialog.connect_response(None, move |d, response| {
+            dialog.connect_response(move |response| {
                 if response == "delete" {
                     let _ = sender_resp.output(RegistryOutput::DeleteEntry {
                         path: path.clone(),
@@ -461,7 +486,6 @@ impl SimpleComponent for RegistryModel {
                         value_name: Some(val_name.clone()),
                     });
                 }
-                d.close();
             });
             dialog.present();
         });

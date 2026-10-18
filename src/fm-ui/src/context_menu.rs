@@ -32,9 +32,6 @@ pub fn create_context_menu(
     shared: &Shared,
     root_path: String,
     sender: &ComponentSender<FmPanelModel>,
-    btn_delete: &gtk::Button,
-    _btn_refresh: &gtk::Button,
-    btn_chmod: &gtk::Button,
 ) -> gtk::Popover {
     let popover = gtk::Popover::builder()
         .position(gtk::PositionType::Bottom)
@@ -168,13 +165,9 @@ pub fn create_context_menu(
     let sender_ren = sender.clone();
     let parent_ren = parent_path.clone();
     let name_ren = name_clone.clone();
-    btn_ren.connect_clicked(move |_| {
+    btn_ren.connect_clicked(move |btn| {
         pop_ren.popdown();
-        if let Some(window) = pop_ren
-            .parent()
-            .and_then(|p| p.root())
-            .and_downcast::<gtk::Window>()
-        {
+        if let Some(window) = btn.root().and_downcast::<gtk::Window>() {
             crate::dialogs::rename_dialog_for(&window, &parent_ren, &name_ren, sender_ren.clone());
         }
     });
@@ -211,10 +204,12 @@ pub fn create_context_menu(
         "destructive-action",
     );
     let pop_del = popover.clone();
-    let btn_delete_clone = btn_delete.clone();
-    btn_del.connect_clicked(move |_| {
+    let shared_del = shared.clone();
+    let sender_del = sender.clone();
+    btn_del.connect_clicked(move |btn| {
         pop_del.popdown();
-        btn_delete_clone.activate();
+        let window = btn.root().and_downcast::<gtk::Window>();
+        crate::dialogs::show_delete_dialog(window.as_ref(), &shared_del, sender_del.clone());
     });
     vbox.append(&btn_del);
 
@@ -224,10 +219,12 @@ pub fn create_context_menu(
         "",
     );
     let pop_chm = popover.clone();
-    let btn_chmod_clone = btn_chmod.clone();
-    btn_chm.connect_clicked(move |_| {
+    let shared_chm = shared.clone();
+    let sender_chm = sender.clone();
+    btn_chm.connect_clicked(move |btn| {
         pop_chm.popdown();
-        btn_chmod_clone.activate();
+        let window = btn.root().and_downcast::<gtk::Window>();
+        crate::dialogs::show_chmod_dialog(window.as_ref(), &shared_chm, sender_chm.clone());
     });
     vbox.append(&btn_chm);
 

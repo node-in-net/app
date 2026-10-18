@@ -27,6 +27,45 @@ pub(crate) fn apply_stored_limits(config: &client_config::AppConfig) {
     page_connection::apply_stored(config);
 }
 
+/// The phone: every category on one scrolling page, pushed on the workspace's navigation.
+pub(crate) fn settings_page(
+    window: &gtk::Window,
+    cmd: &UnboundedSender<ApiCmd>,
+    config: &client_config::AppConfig,
+) -> adw::NavigationPage {
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    col.set_margin_start(12);
+    col.set_margin_end(12);
+    col.set_margin_bottom(24);
+    let heading = |key: &str| {
+        let label = gtk::Label::new(Some(&crate::i18n::tr(key)));
+        label.add_css_class("caption-heading");
+        label.add_css_class("dim-label");
+        label.set_halign(gtk::Align::Start);
+        label.set_margin_top(18);
+        label
+    };
+    col.append(&heading("settings.cat_sharing"));
+    col.append(&page_sharing::service_config(cmd, config).widget);
+    col.append(&heading("settings.cat_network"));
+    col.append(&page_network::relay_region(cmd, config));
+    col.append(&page_network::network_limits(config));
+    col.append(&heading("settings.cat_connection"));
+    col.append(&page_connection::build(config));
+    col.append(&heading("settings.cat_general"));
+    col.append(&page_general::theme(cmd, config));
+    col.append(&page_general::language(config));
+    col.append(&heading("settings.cat_about"));
+    col.append(&page_about::about(window));
+
+    let clamp = adw::Clamp::builder().maximum_size(600).child(&col).build();
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .child(&clamp)
+        .build();
+    adw::NavigationPage::with_tag(&scroll, &crate::i18n::tr("settings.title"), "settings")
+}
+
 pub(crate) fn open_settings_dialog(
     parent: Option<gtk::Window>,
     cmd: &UnboundedSender<ApiCmd>,

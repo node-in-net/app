@@ -10,6 +10,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::icons;
+
 fn join(cwd: &str, name: &str) -> String {
     if cwd.ends_with('/') {
         format!("{cwd}{name}")
@@ -32,6 +34,7 @@ struct SideState {
 
 pub struct FilesPane {
     pub widget: gtk::Widget,
+    remote_name: Option<gtk::Label>,
     left: relm4::Controller<FmPanelModel>,
     right: relm4::Controller<FmPanelModel>,
     left_state: Rc<RefCell<SideState>>,
@@ -88,37 +91,56 @@ impl FilesPane {
         track_focus(left.widget(), Side::Left, &active, &cmd_for_keys);
         track_focus(right.widget(), Side::Right, &active, &cmd_for_keys);
 
-        let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
-        paned.set_start_child(Some(left.widget()));
-        paned.set_end_child(Some(right.widget()));
-        paned.set_resize_start_child(true);
-        paned.set_resize_end_child(true);
-        paned.set_shrink_start_child(false);
-        paned.set_shrink_end_child(false);
-        paned.set_wide_handle(true);
-        paned.set_vexpand(true);
-
         let states = (left_state.clone(), right_state.clone());
-        let panels = (left.sender().clone(), right.sender().clone());
-        root.append(&paned);
-        let (bar, shift_labels) = fkey_bar(&cmd_for_keys, &active, &states);
-        root.append(&bar);
-        install_fkeys(
-            &root,
-            &cmd_for_keys,
-            &active,
-            &states,
-            &panels,
-            shift_labels,
-        );
+        let remote_name = if crate::mobile() {
+            Some(build_single_pane(
+                &root,
+                &left,
+                &right,
+                &active,
+                &states,
+                &cmd_for_keys,
+            ))
+        } else {
+            let paned = gtk::Paned::new(gtk::Orientation::Horizontal);
+            paned.set_start_child(Some(left.widget()));
+            paned.set_end_child(Some(right.widget()));
+            paned.set_resize_start_child(true);
+            paned.set_resize_end_child(true);
+            paned.set_shrink_start_child(false);
+            paned.set_shrink_end_child(false);
+            paned.set_wide_handle(true);
+            paned.set_vexpand(true);
+
+            let panels = (left.sender().clone(), right.sender().clone());
+            root.append(&paned);
+            let (bar, shift_labels) = fkey_bar(&cmd_for_keys, &active, &states);
+            root.append(&bar);
+            install_fkeys(
+                &root,
+                &cmd_for_keys,
+                &active,
+                &states,
+                &panels,
+                shift_labels,
+            );
+            None
+        };
 
         Self {
             widget: root.upcast(),
+            remote_name,
             left,
             right,
             left_state,
             right_state,
             clips: [left_clip, right_clip],
+        }
+    }
+
+    pub fn set_remote_name(&self, name: &str) {
+        if let Some(label) = &self.remote_name {
+            label.set_text(name);
         }
     }
 
@@ -243,6 +265,109 @@ impl ShiftLabels {
             btn.set_label(if shift_held { shifted } else { plain });
         }
     }
+}
+
+/// The phone: one panel at a time, this device's files or the peer's; the hidden one is the
+/// copy target.
+fn build_single_pane(
+    root: &gtk::Box,
+    left: &relm4::Controller<FmPanelModel>,
+    right: &relm4::Controller<FmPanelModel>,
+    active: &ActiveSide,
+    states: &Sides,
+    cmd: &UnboundedSender<ApiCmd>,
+) -> gtk::Label {
+    let sides = gtk::Stack::new();
+    sides.set_vexpand(true);
+    sides.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
+    sides.add_named(left.widget(), Some("local"));
+    sides.add_named(right.widget(), Some("remote"));
+    sides.set_visible_child_name("remote");
+    active.set(Side::Right);
+
+    let local_name = gtk::Label::new(crate::platform().device_name().as_deref());
+    let remote_name = gtk::Label::new(None);
+    let local_btn = side_toggle(icons::os_icon_name(std::env::consts::OS), &local_name);
+    let remote_btn = side_toggle("connect", &remote_name);
+    remote_btn.set_group(Some(&local_btn));
+    remote_btn.set_active(true);
+    for (btn, side, page) in [
+        (&local_btn, Side::Left, "local"),
+        (&remote_btn, Side::Right, "remote"),
+    ] {
+        let sides = sides.clone();
+        let active = active.clone();
+        let cmd = cmd.clone();
+        btn.connect_toggled(move |b| {
+            if b.is_active() {
+                sides.set_visible_child_name(page);
+                active.set(side);
+                let _ = cmd.send(ApiCmd::FmActivate { side });
+            }
+        });
+    }
+    let switcher = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    switcher.add_css_class("linked");
+    switcher.set_homogeneous(true);
+    switcher.set_margin_top(6);
+    switcher.set_margin_bottom(6);
+    switcher.set_margin_start(8);
+    switcher.set_margin_end(8);
+    switcher.append(&local_btn);
+    switcher.append(&remote_btn);
+
+    root.append(&switcher);
+    root.append(&sides);
+    root.append(&action_bar(cmd, active, states));
+    remote_name
+}
+
+fn side_toggle(icon: &str, name: &gtk::Label) -> gtk::ToggleButton {
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let inner = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    inner.set_halign(gtk::Align::Center);
+    inner.append(&icons::image(icon, 16));
+    inner.append(name);
+    let btn = gtk::ToggleButton::new();
+    btn.set_child(Some(&inner));
+    btn
+}
+
+/// The F-key bar for touch: the same actions as icons.
+fn action_bar(cmd: &UnboundedSender<ApiCmd>, active: &ActiveSide, states: &Sides) -> gtk::Box {
+    const ACTIONS: [(FKey, &str, &str); 8] = [
+        (FKey::View, "open-document", "files.view"),
+        (FKey::Edit, "edit-file", "files.edit"),
+        (FKey::NewFile, "add-file", "files.new"),
+        (FKey::Mkdir, "add-folder", "files.mkdir"),
+        (FKey::Rename, "edit-pencil", "files.rename"),
+        (FKey::Copy, "copy", "files.copy"),
+        (FKey::Move, "cut", "files.move"),
+        (FKey::Delete, "delete-file", "files.delete"),
+    ];
+    let bar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .homogeneous(true)
+        .margin_start(4)
+        .margin_end(4)
+        .margin_top(2)
+        .margin_bottom(2)
+        .build();
+    for (action, icon, label) in ACTIONS {
+        let btn = gtk::Button::new();
+        btn.set_child(Some(&icons::image(icon, 20)));
+        btn.add_css_class("flat");
+        btn.set_tooltip_text(Some(&crate::i18n::tr(label)));
+        let cmd = cmd.clone();
+        let active = active.clone();
+        let states = states.clone();
+        btn.connect_clicked(move |b| {
+            let window = b.root().and_downcast::<gtk::Window>();
+            run(action, &cmd, &active, &states, window.as_ref());
+        });
+        bar.append(&btn);
+    }
+    bar
 }
 
 fn track_focus(

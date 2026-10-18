@@ -55,6 +55,7 @@
   "rdesk.establish_desc": "Udostępnianie ekranu i sterowanie z szyfrowaniem end-to-end przez WebRTC z kompresją H.264.",
   "rdesk.establish_title": "Nawiąż połączenie zdalne",
   "rdesk.failed": "Niepowodzenie",
+  "rdesk.fill_height": "Pełna wysokość",
   "rdesk.gst_available": "🟢 <b>Źródło GStreamer PipeWire</b>: Dostępne",
   "rdesk.gst_missing": "🔴 <b>Źródło GStreamer PipeWire</b>: Brak (Wymagane do hostowania strumienia)",
   "rdesk.gst_success": "🟢 GStreamer pomyślnie zainstalowany!",

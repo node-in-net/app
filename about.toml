@@ -49,7 +49,7 @@ ignore-dev-dependencies = true
 
 # Drops workspace crates that carry `publish = false`; they are this project, not
 # third-party code. The binaries and libraries that do not set it — nodeinnet-gtk,
-# console-app, app-core, app-headless, app-net, android-node, wasm-node — still
+# console-app, app-core, app-headless, app-net, wasm-node — still
 # appear, so each of them declares `license = "MIT OR Apache-2.0"` and shows up
 # with that rather than as Unknown.
 private = { ignore = true }

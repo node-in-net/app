@@ -30,6 +30,7 @@ gtk-dialogs = { workspace = true }
 app-core = { path = "../app-core" }
 app-headless = { path = "../app-headless" }
 app-net = { path = "../app-net" }
+p2p-handlers = { workspace = true }
 web-davserver = { workspace = true }
 async-trait = "0.1"
 serde_json = { workspace = true }

@@ -71,6 +71,8 @@ pub(crate) fn language(config: &client_config::AppConfig) -> gtk::Box {
     restart.add_css_class("suggested-action");
     restart.set_halign(gtk::Align::Center);
     restart.set_visible(false);
+    // An Android app cannot re-exec itself; the hint asks to reopen it.
+    let can_restart = !cfg!(target_os = "android");
     restart.connect_clicked(|_| nodeinnet_utils::app::restart_app());
 
     {
@@ -85,7 +87,7 @@ pub(crate) fn language(config: &client_config::AppConfig) -> gtk::Box {
             config.save();
             nodeinnet_i18n::set_lang(code);
             hint.set_visible(true);
-            restart.set_visible(true);
+            restart.set_visible(can_restart);
         });
     }
 

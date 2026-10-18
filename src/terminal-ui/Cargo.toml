@@ -12,6 +12,7 @@ adw = { package = "libadwaita", version = "0.7", features = ["v1_6"] }
 relm4 = { workspace = true }
 client-config = { workspace = true }
 nodeinnet-i18n = { workspace = true }
+gtk-dialogs = { workspace = true }
 vt100 = "0.15"
 
 [dev-dependencies]

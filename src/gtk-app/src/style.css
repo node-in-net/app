@@ -109,6 +109,9 @@
   color: @accent_color;
   font-weight: 700;
 }
+.service-bar .service-tab {
+  padding: 6px 10px;
+}
 
 /* Wizard service toggle: a disabled service's icon goes gray + dim. */
 .svc-off {
@@ -169,3 +172,13 @@
     min-width: 10px;
     margin: -2px -2px 0 0;
 }
+
+/* Touch: a context menu opened as a bottom sheet. */
+.touch-menu {
+  margin: 12px;
+}
+.touch-menu button {
+  min-height: 48px;
+  padding: 0 14px;
+}
+
