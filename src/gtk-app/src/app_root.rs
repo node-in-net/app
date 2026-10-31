@@ -439,6 +439,16 @@ impl SimpleComponent for AppModel {
                             .ok();
                     }
                 }
+                Some("vpn_changed") => {
+                    if let Ok(state) =
+                        serde_json::from_value::<app_core::webvpn::VpnState>(v["vpn"].clone())
+                    {
+                        self.workspace
+                            .sender()
+                            .send(WorkspaceInput::Vpn(Box::new(state)))
+                            .ok();
+                    }
+                }
                 Some("proxied_apps_changed") => {
                     self.workspace
                         .sender()
@@ -501,6 +511,14 @@ impl SimpleComponent for AppModel {
                     self.workspace
                         .sender()
                         .send(WorkspaceInput::Render(Box::new(snap)))
+                        .ok();
+                }
+                if let Ok(state) =
+                    serde_json::from_value::<app_core::webvpn::VpnState>(v["vpn"].clone())
+                {
+                    self.workspace
+                        .sender()
+                        .send(WorkspaceInput::Vpn(Box::new(state)))
                         .ok();
                 }
                 for (key, side) in [

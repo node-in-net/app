@@ -517,10 +517,12 @@ name = "app-net"
 version = "0.5.513"
 dependencies = [
  "app-core",
+ "app-tun",
  "app-version",
  "async-trait",
  "client-config",
  "client-core",
+ "etherparse",
  "nodeinnet-p2p",
  "p2p-handlers",
  "p2p-node",
@@ -531,6 +533,16 @@ dependencies = [
  "uuid",
  "web-davserver",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "app-tun"
+version = "0.5.513"
+dependencies = [
+ "etherparse",
+ "ipstack",
+ "libc",
+ "tokio",
 ]
 
 [[package]]
@@ -2113,6 +2125,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "etherparse"
+version = "0.20.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeebdb565da33451794551a771bd0b4e6f416d3182adc3ed2837f614d6168f9a"
+dependencies = [
+ "arrayvec",
+]
+
+[[package]]
 name = "euclid"
 version = "0.22.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3645,6 +3666,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a756c3fac73139e83f14c2d742155dd2b78d3ee56597b419a0579b7bdd6dd78"
 
 [[package]]
+name = "ipstack"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e889a45c1ce3e97268ad2249951528563ec1d02a120fecbd4db690beac34f7fd"
+dependencies = [
+ "ahash",
+ "etherparse",
+ "log",
+ "rand 0.10.2",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "is-docker"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4227,15 +4263,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nodeinnet-android"
-version = "0.1.0"
-dependencies = [
- "gtk4",
- "jni",
- "nodeinnet-gtk",
-]
-
-[[package]]
 name = "nodeinnet-api"
 version = "0.1.0"
 dependencies = [
@@ -4277,7 +4304,9 @@ dependencies = [
  "gtk-viewer-ui",
  "gtk4",
  "hostname 0.4.2",
+ "jni",
  "libadwaita",
+ "libc",
  "md5",
  "node-functions",
  "nodeinnet-i18n",

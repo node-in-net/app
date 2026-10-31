@@ -119,6 +119,8 @@ public class BrowserActivity extends Activity {
 	protected void onDestroy() {
 		if (routed && --open == 0) {
 			ProxyController.getInstance().clearProxyOverride(Runnable::run, () -> {});
+			// Not only on refocus: after a swipe, the VPN's service keeps the process and proxy alive.
+			Core.call(Core::nativeBrowserClosed);
 		}
 		if (web != null) web.destroy();
 		super.onDestroy();

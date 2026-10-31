@@ -1,5 +1,12 @@
 use p2p_handlers::Capabilities;
 
+pub struct VpnRequest<'a> {
+    pub apps: &'a [String],
+    pub peer: &'a str,
+    pub title: &'a str,
+    pub stop: &'a str,
+}
+
 pub struct Hosting {
     pub capabilities: Capabilities,
     /// Lets peers start this machine's desktop apps through its network (LD_PRELOAD launcher).
@@ -34,6 +41,27 @@ pub trait Platform {
     /// Opens an in-app browser whose traffic goes through the SOCKS proxy on this port.
     fn open_browser(&self, _window: &gtk::Window, _proxy_port: u16) -> bool {
         false
+    }
+
+    fn app_vpn(&self) -> bool {
+        false
+    }
+
+    /// Asks the system, which asks the user the first time; the core reports the outcome.
+    fn start_vpn(&self, _window: &gtk::Window, _request: &VpnRequest) -> bool {
+        false
+    }
+
+    fn stop_vpn(&self, _window: &gtk::Window) {}
+
+    /// What a VPN can route, as the launcher lists it: (package, label) by label.
+    fn launcher_apps(&self, _window: &gtk::Window) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// The packages of `launcher_apps` alone, which is much quicker to ask for.
+    fn launcher_packages(&self, _window: &gtk::Window) -> Vec<String> {
+        Vec::new()
     }
 }
 

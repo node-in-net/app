@@ -52,6 +52,7 @@ pub enum WorkspaceInput {
     Render(Box<WorkspaceSnapshot>),
     ReloadApps,
     WebVpn(Box<app_core::webvpn::WebVpnState>),
+    Vpn(Box<app_core::webvpn::VpnState>),
     Tunnels(app_net::TunnelTotals, Vec<app_net::LaunchedApp>),
     Panel(Side, Box<PanelState>),
     Clipboard(Option<app_core::fm::ClipboardView>),
@@ -99,6 +100,9 @@ pub struct WorkspaceModel {
     sysinfo_polling: Cell<bool>,
     session: RefCell<Session>,
     page: Cell<&'static str>,
+    /// Offline, the VPN's device keeps its Network tab, where the VPN can be stopped.
+    vpn_peer: RefCell<Option<String>>,
+    last: RefCell<Option<WorkspaceSnapshot>>,
 }
 
 #[derive(Default)]
@@ -195,10 +199,11 @@ struct BrowserPage {
     widget: gtk::Box,
     hint: gtk::Label,
     open: gtk::Button,
+    vpn: Option<crate::vpn::VpnSection>,
 }
 
 impl BrowserPage {
-    fn new(cmd: &UnboundedSender<ApiCmd>) -> Self {
+    fn new(cmd: &UnboundedSender<ApiCmd>, config: &client_config::AppConfig) -> Self {
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 18);
         widget.set_valign(gtk::Align::Center);
         widget.set_margin_start(24);
@@ -240,16 +245,41 @@ impl BrowserPage {
                 });
             });
         }
-        Self { widget, hint, open }
+        let vpn = crate::platform()
+            .app_vpn()
+            .then(|| crate::vpn::VpnSection::new(config));
+        if let Some(vpn) = &vpn {
+            widget.append(&vpn.widget);
+        }
+        Self {
+            widget,
+            hint,
+            open,
+            vpn,
+        }
     }
 
-    fn render(&self, peer_name: &str, has_network: bool, connected: bool) {
+    fn render(
+        &self,
+        peer: &DeviceInfo,
+        has_network: bool,
+        connected: bool,
+        snap: &WorkspaceSnapshot,
+    ) {
         self.hint.set_text(&if has_network {
-            i18n::trf("browser.hint", &[("peer", peer_name)])
+            i18n::trf("browser.hint", &[("peer", &peer.name)])
         } else {
             i18n::tr("browser.no_network")
         });
         self.open.set_sensitive(has_network && connected);
+        if let Some(vpn) = &self.vpn {
+            let names = snap
+                .devices
+                .iter()
+                .map(|d| (d.id.clone(), d.name.clone()))
+                .collect();
+            vpn.render(&peer.id, &peer.name, has_network && peer.online, names);
+        }
     }
 }
 
@@ -600,7 +630,10 @@ impl WorkspaceModel {
         self.session.replace(session);
 
         let offline = selected.map(|d| !d.online).unwrap_or(false);
-        let page = if offline {
+        let vpn_here = selected.is_some_and(|d| self.vpn_peer.borrow().as_ref() == Some(&d.id));
+        let page = if offline && vpn_here && self.browser.is_some() {
+            tab_page_name(ServiceKind::Network)
+        } else if offline {
             "offline"
         } else {
             snap.panes
@@ -643,8 +676,8 @@ impl WorkspaceModel {
         let connected = selected
             .map(|d| matches!(d.link, app_core::workspace::LinkState::Connected))
             .unwrap_or(false);
-        if let Some(browser) = &self.browser {
-            browser.render(&peer_name, has_peer, connected);
+        if let (Some(browser), Some(device)) = (&self.browser, selected) {
+            browser.render(device, has_peer, connected, snap);
         }
         let _ = self.network.sender().send(NetworkInput::SetContext {
             peer_name,
@@ -741,7 +774,11 @@ impl SimpleComponent for WorkspaceModel {
         signout.set_tooltip_text(Some(&i18n::tr("workspace.sign_out")));
         {
             let cmd = cmd.clone();
-            signout.connect_clicked(move |_| {
+            signout.connect_clicked(move |btn| {
+                let window = btn.root().and_downcast::<gtk::Window>();
+                if let Some(window) = window.filter(|_| crate::platform().app_vpn()) {
+                    crate::platform().stop_vpn(&window);
+                }
                 let _ = cmd.send(ApiCmd::AuthLogout);
             });
         }
@@ -922,7 +959,7 @@ impl SimpleComponent for WorkspaceModel {
         let registry = build_registry(cmd.clone());
         let sysinfo = build_sysinfo(cmd.clone());
 
-        let browser = mobile.then(|| BrowserPage::new(&cmd));
+        let browser = mobile.then(|| BrowserPage::new(&cmd, &config));
         let content = gtk::Stack::new();
         content.set_vexpand(true);
         // A hidden service must not widen the phone's page: the remote desktop alone asks ~1000px.
@@ -1103,13 +1140,18 @@ impl SimpleComponent for WorkspaceModel {
             sysinfo_polling: Cell::new(false),
             session: RefCell::new(Session::default()),
             page: Cell::new("empty"),
+            vpn_peer: RefCell::new(None),
+            last: RefCell::new(None),
         };
         ComponentParts { model, widgets: () }
     }
 
     fn update(&mut self, message: Self::Input, _sender: ComponentSender<Self>) {
         match message {
-            WorkspaceInput::Render(snap) => self.render(&snap),
+            WorkspaceInput::Render(snap) => {
+                self.render(&snap);
+                self.last.replace(Some(*snap));
+            }
             WorkspaceInput::ReloadApps => {
                 let _ = self.network.sender().send(NetworkInput::ReloadApps);
             }
@@ -1155,6 +1197,18 @@ impl SimpleComponent for WorkspaceModel {
                     rx: state.totals.bytes_down,
                     tx: state.totals.bytes_up,
                 });
+            }
+            WorkspaceInput::Vpn(state) => {
+                let peer = state.peer.clone().filter(|_| state.running);
+                let moved = self.vpn_peer.replace(peer.clone()) != peer;
+                if let Some(vpn) = self.browser.as_ref().and_then(|b| b.vpn.as_ref()) {
+                    vpn.apply(*state);
+                }
+                if moved {
+                    if let Some(snap) = self.last.borrow().as_ref() {
+                        self.render(snap);
+                    }
+                }
             }
             WorkspaceInput::Panel(side, panel) => self.files.apply(side, *panel),
             WorkspaceInput::Clipboard(view) => self.files.set_clipboard(view.as_ref()),

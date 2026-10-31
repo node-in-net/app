@@ -26,12 +26,11 @@ connects and uses what its peers offer.
 
 | Crate | What it is |
 | --- | --- |
-| `nodeinnet-gtk` (`src/gtk-app`) | The desktop application. |
+| `nodeinnet-gtk` (`src/gtk-app`) | The application, on the desktop and on Android (`src/android`, Gradle project in `android/`). |
 | `app-core` | Application state and logic, with no network and no toolkit. Everything else plugs into its traits. |
 | `app-net` | The network side: message routing, node runtime, device identity, account sign-in. |
 | `app-headless` | The same application driven over a local REST API instead of a window, for automated runs. |
 | `console-app` | A headless node for servers. |
-| `android-app` | The Android entry point of `gtk-app` and its Gradle project. |
 | `wasm-node` | The protocol compiled to WebAssembly for the browser client. |
 | `node-network` | A small library loaded into a program you launch, so its connections go through the peer instead of your own network. See below. |
 
@@ -193,8 +192,8 @@ Screen capture uses ScreenCaptureKit, which needs macOS 12.3 or newer.
 ### Android
 
 The Android app is the GTK client itself (`gtk-app`, with its phone layout) on GTK's Android
-runtime (API 31+): `src/android-app` holds only its entry point and the Gradle project. It is
-built against the GTK stack release of
+runtime (API 31+): `src/gtk-app/src/android` is its entry point, `src/gtk-app/android` the
+Gradle project. It is built against the GTK stack release of
 [android-rust-gtk4-adwaita](https://github.com/savchenko-igor/android-rust-gtk4-adwaita) that
 `gtk-stack.lock` pins (version and SHA-256), unpacked into
 `~/.cache/android-rust-gtk4-adwaita/<version>/`; `GTK_STACK` points at a checkout instead.
@@ -210,7 +209,7 @@ npm run run-android-dev             # the same, linked faster, for iterating
 ```
 
 `npm run run-app-mobile` runs the desktop binary with the phone layout (`NODEINNET_MOBILE=1`);
-`src/android-app/preview.sh` shows it in a browser through Broadway.
+`src/gtk-app/android/preview.sh` shows it in a browser through Broadway.
 
 ### Distributable packages
 

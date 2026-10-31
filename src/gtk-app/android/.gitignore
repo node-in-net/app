@@ -1,4 +1,5 @@
 /.gradle/
+/build/
 /.kotlin/
 /.idea/
 /app/.gradle/

@@ -1,6 +1,8 @@
 //! The node.in.net GTK client. `run` builds it for a [`Platform`]: the desktop binary
-//! (src/main.rs) or the Android app (src/android-app).
+//! (src/main.rs) or Android (src/android).
 
+#[cfg(target_os = "android")]
+mod android;
 mod app_root;
 mod bridge;
 mod clipboard;
@@ -12,6 +14,7 @@ mod settings;
 #[cfg(not(target_os = "android"))]
 mod updater;
 mod viewer;
+mod vpn;
 mod wizard;
 mod workspace;
 
@@ -22,7 +25,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 
 pub use p2p_handlers::Capabilities;
-pub use platform::{Desktop, Hosting, Platform};
+pub use platform::{Desktop, Hosting, Platform, VpnRequest};
 
 pub const APP_ID: &str = "com.nodeinnet.app";
 
@@ -67,6 +70,10 @@ pub fn apply_theme(index: u32) {
 thread_local! {
     static PLATFORM: RefCell<Option<Rc<dyn Platform>>> = const { RefCell::new(None) };
 }
+
+#[cfg(target_os = "android")]
+static CORE: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<app_headless::ApiCmd>> =
+    std::sync::OnceLock::new();
 
 pub(crate) fn platform() -> Rc<dyn Platform> {
     PLATFORM
@@ -163,6 +170,8 @@ pub fn run(platform: Rc<dyn Platform>) {
             None => app_headless::start_core(build),
         }
     };
+    #[cfg(target_os = "android")]
+    let _ = CORE.set(headless.cmd.clone());
 
     if !mock {
         let net = {

@@ -18,4 +18,4 @@ bin/shots/
 # so debug builds keep one signature across machines; it is guarded by a file check and
 # simply does nothing without it. Not committed: a keystore in a public repository trips
 # every secret scanner, and the only thing lost is a stable DEBUG signature.
-src/android-app/debug.keystore
+src/gtk-app/android/debug.keystore

@@ -86,6 +86,7 @@ impl WebVpnRouter {
                 if !is_success {
                     inner.streams.remove(&stream_id);
                     inner.totals.errors += 1;
+                    inner.totals.streams_closed += 1;
                 }
                 None
             }
@@ -151,7 +152,7 @@ impl WebVpnRouter {
         self.inner.lock().unwrap().totals.errors += 1;
     }
 
-    fn drain_streams(&self) -> Vec<Uuid> {
+    pub fn drain_streams(&self) -> Vec<Uuid> {
         let mut inner = self.inner.lock().unwrap();
         let ids: Vec<Uuid> = inner.streams.keys().copied().collect();
         for (_, tx) in inner.streams.drain() {
@@ -167,6 +168,19 @@ pub struct FetchResponse {
     pub status: u16,
     pub headers: std::collections::BTreeMap<String, String>,
     pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VpnState {
+    pub running: bool,
+    pub peer: Option<String>,
+    pub online: bool,
+    pub sockets: u64,
+    pub bytes_up: u64,
+    pub bytes_down: u64,
+    /// Moves on every start, stop or abandoned start: a request has had its answer.
+    #[serde(default)]
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -600,7 +614,12 @@ mod tests {
         });
         let err = v.connect_stream("example.test", 81).await.unwrap_err();
         assert!(err.contains("refused"));
-        assert_eq!(v.state().totals.errors, 1);
+        let t = v.state().totals;
+        assert_eq!(t.errors, 1);
+        assert_eq!(
+            t.streams_opened, t.streams_closed,
+            "a refused stream is not counted as live"
+        );
     }
 
     #[tokio::test]

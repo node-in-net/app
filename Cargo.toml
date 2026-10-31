@@ -8,6 +8,7 @@ members = [
     "src/app-core",
     "src/app-headless",
     "src/app-net",
+    "src/app-tun",
     "src/console-app",
     "src/wasm-node",
     "src/client-config",
@@ -31,15 +32,14 @@ members = [
     "src/terminal-ui",
     "src/registry-ui",
     "src/updater-ui",
-    "src/dialogs",
-    "src/android-app"
+    "src/dialogs"
 ]
 resolver = "2"
 
 [profile.release]
 strip = true
 
-# The Android app (src/android-app/build.sh): the smallest library, and one that links in a
+# The Android app (src/gtk-app/android/build.sh): the smallest library, and one that links in a
 # fraction of the time for iterating on a device.
 [profile.android]
 inherits = "release"
@@ -77,6 +77,7 @@ nodeinnet-i18n = { path = "src/i18n" }
 app-core = { path = "src/app-core" }
 app-headless = { path = "src/app-headless" }
 app-net = { path = "src/app-net" }
+app-tun = { path = "src/app-tun" }
 gtk-fm-ui = { path = "src/fm-ui" }
 gtk-graph-ui = { path = "src/graph-ui" }
 gtk-net-ui = { path = "src/net-ui" }

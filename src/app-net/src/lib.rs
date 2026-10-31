@@ -18,6 +18,10 @@ mod launcher;
 pub use launcher::{launch_proxied_app, LaunchedApp, SocksManager, TunnelTotals, PORT_VAR};
 mod socks;
 pub use socks::SocksProxy;
+#[cfg(unix)]
+mod vpn;
+#[cfg(unix)]
+pub use vpn::VpnTunnel;
 
 pub struct Routers {
     pub pending: Arc<PendingP2p>,
@@ -25,6 +29,8 @@ pub struct Routers {
     pub terminal: Arc<TerminalRouter>,
     pub desktop: Arc<DesktopRouter>,
     pub webvpn: Arc<WebVpnRouter>,
+    /// The running VPN's own: its streams outlive the browser's tunnel and a change of device.
+    pub vpn: std::sync::RwLock<Option<Arc<WebVpnRouter>>>,
     pub remote_apps: Arc<app_core::remote_apps::RemoteAppsCache>,
     pub sysinfo: Arc<app_core::sysinfo::SysInfoCache>,
 }
@@ -38,6 +44,7 @@ impl Routers {
             terminal: TerminalRouter::new(),
             desktop: DesktopRouter::new(),
             webvpn: WebVpnRouter::new(),
+            vpn: std::sync::RwLock::new(None),
             remote_apps: app_core::remote_apps::RemoteAppsCache::new(),
             sysinfo: app_core::sysinfo::SysInfoCache::new(),
         })
@@ -56,6 +63,11 @@ impl Routers {
         let msg = web_davserver::feed_response(msg)?;
         let msg = self.terminal.route(msg)?;
         let msg = self.webvpn.route(msg)?;
+        let vpn = self.vpn.read().unwrap().clone();
+        let msg = match vpn {
+            Some(router) => router.route(msg)?,
+            None => msg,
+        };
         let msg = self.remote_apps.route(msg)?;
         let msg = self.sysinfo.route(msg)?;
         Some(msg)

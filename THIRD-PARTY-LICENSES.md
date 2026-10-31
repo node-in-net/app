@@ -20,7 +20,7 @@ stack. They are not Rust crates, so they are not covered by the generated sectio
 | --- | --- | --- | --- |
 | GTK 4, libadwaita, GLib, Pango, gdk-pixbuf, librsvg | LGPL-2.1-or-later | desktop, all platforms | dynamic |
 | cairo | LGPL-2.1-only OR MPL-1.1 (used under LGPL-2.1) | desktop, all platforms | dynamic |
-| GTK stack for Android, from android-rust-gtk4-adwaita 0.1.0: GTK 4, libadwaita, GLib, Pango, gdk-pixbuf, cairo and the libraries under them | LGPL-2.1-or-later for GTK, libadwaita, GLib, Pango and gdk-pixbuf; cairo as above; the rest as the stack's `THIRD-PARTY.md` lists them | Android | dynamic |
+| GTK stack for Android, from android-rust-gtk4-adwaita 0.1.1: GTK 4, libadwaita, GLib, Pango, gdk-pixbuf, cairo and the libraries under them | LGPL-2.1-or-later for GTK, libadwaita, GLib, Pango and gdk-pixbuf; cairo as above; the rest as the stack's `THIRD-PARTY.md` lists them | Android | dynamic |
 | GStreamer | LGPL-2.1-or-later | Linux: screen capture, taken from the system. Windows: bundled with GTK, not driven by this application | dynamic |
 | libtiff | libtiff license (BSD-like) | Windows bundle | dynamic |
 | libidn2 | LGPL-3.0-or-later OR GPL-2.0-or-later (used under LGPL-3.0) | Windows bundle | dynamic |
@@ -41,8 +41,8 @@ PipeWire, the imaging stack — comes from the distribution too. The Windows
 installer bundles the MSYS2 GTK 4 runtime, and the macOS bundle carries the copies
 `dylibbundler` collects.
 
-**The Android APK carries its own GTK stack**, from **android-rust-gtk4-adwaita 0.1.0**
-— https://github.com/savchenko-igor/android-rust-gtk4-adwaita (release `v0.1.0`) — the
+**The Android APK carries its own GTK stack**, from **android-rust-gtk4-adwaita 0.1.1**
+— https://github.com/savchenko-igor/android-rust-gtk4-adwaita (release `v0.1.1`) — the
 GTK 4 / libadwaita stack for Android these libraries come from. They ship in the APK as
 separate shared libraries, linked dynamically. Its build scripts are MIT OR Apache-2.0;
 its patches to GTK, GLib and gdk-pixbuf are LGPL-2.1-or-later and included in the
@@ -135,9 +135,7 @@ your own. The author credits them here in any case.
 
 The icons ship in every client, so this applies to all of them: the GTK assets
 under [`src/gtk-app/assets/`](src/gtk-app/assets/) and the other `src/*-ui/assets/`
-directories, the Android set under
-[`src/android-app/app/src/main/assets/icons/`](src/android-app/app/src/main/assets/icons/),
-and the copies served by the browser client from the `webapp` repository.
+directories, and the copies served by the browser client from the `webapp` repository.
 
 The application logo (`src/gtk-app/assets/logo.svg`, `icon-128.png`, `icon-512.png`,
 `win32-icon.ico`, the Android launcher icons under `res/mipmap-*`) and the product
@@ -145,7 +143,7 @@ name are the project's own and are not covered by the above.
 
 ## Rust dependencies
 
-- **Apache License 2.0** (`Apache-2.0`) — 480 crates
+- **Apache License 2.0** (`Apache-2.0`) — 482 crates
 - **MIT License** (`MIT`) — 166 crates
 - **ISC License** (`ISC`) — 29 crates
 - **BSD 2-Clause "Simplified" License** (`BSD-2-Clause`) — 24 crates
@@ -341,6 +339,7 @@ name are the project's own and are not covered by the above.
 | enumflags2_derive | 0.7.12 | MIT OR Apache-2.0 |
 | equivalent | 1.0.2 | Apache-2.0 OR MIT |
 | errno | 0.3.14 | MIT OR Apache-2.0 |
+| etherparse | 0.20.3 | MIT OR Apache-2.0 |
 | event-listener | 5.4.2 | Apache-2.0 OR MIT |
 | event-listener-strategy | 0.5.4 | Apache-2.0 OR MIT |
 | exr | 1.74.2 | BSD-3-Clause |
@@ -456,6 +455,7 @@ name are the project's own and are not covered by the above.
 | interceptor | 0.8.2 | MIT OR Apache-2.0 |
 | io-lifetimes | 1.0.11 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | ipnet | 2.12.1 | MIT OR Apache-2.0 |
+| ipstack | 1.0.1 | Apache-2.0 |
 | is-docker | 0.2.0 | MIT |
 | is-wsl | 0.4.0 | MIT |
 | is_terminal_polyfill | 1.70.2 | MIT OR Apache-2.0 |

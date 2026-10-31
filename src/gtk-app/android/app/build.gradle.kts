@@ -2,8 +2,8 @@ plugins {
     id("com.android.application")
 }
 
-// nodeinnet/app: this module lives in src/android-app/app.
-val appRoot: File = rootProject.projectDir.parentFile.parentFile
+// nodeinnet/app: this module lives in src/gtk-app/android/app.
+val appRoot: File = rootProject.projectDir.parentFile.parentFile.parentFile
 layout.buildDirectory.set(File(appRoot, "bin/android-gtk-app"))
 
 val appVersion: String = run {
@@ -54,8 +54,8 @@ check(File(gtkStage, "jniLibs/arm64-v8a/libgtk-4.so").isFile) { "No GTK stack st
 
 tasks.named("preBuild") {
     doFirst {
-        check(File(rustLibs, "arm64-v8a/libnodeinnet_android.so").isFile) {
-            "No Rust library in $rustLibs: run src/android-app/build.sh (npm run build-android does both)"
+        check(File(rustLibs, "arm64-v8a/libnodeinnet_gtk.so").isFile) {
+            "No Rust library in $rustLibs: run src/gtk-app/android/build.sh (npm run build-android does both)"
         }
     }
 }

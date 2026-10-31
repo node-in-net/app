@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- GTK brings a presented window's task to the front (ActivityManager.moveTaskToFront). -->
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Local files and shared folders are real paths in the native code, as in the Kotlin client. -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <application
+        android:name="net.nodeinnet.gtk.NodeInNetApplication"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.NodeInNet">
+
+        <!-- lib<value>.so must export main(); GTK's RuntimeApplication runs it on the GTK thread. -->
+        <meta-data android:name="gtk.android.lib_name" android:value="nodeinnet_gtk" />
+
+        <!-- singleTask: standard stacks a blank second activity on launcher reopen, as GDK has no window for it. -->
+        <activity
+            android:name="net.nodeinnet.gtk.MainActivity"
+            android:launchMode="singleTask"
+            android:configChanges="colorMode|density|fontScale|fontWeightAdjustment|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode"
+            android:windowSoftInputMode="adjustResize"
+            android:enableOnBackInvokedCallback="true"
+            android:resizeableActivity="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- GTK starts any further toplevel window with this class, which must stay standard. -->
+        <activity
+            android:name="org.gtk.android.ToplevelActivity"
+            android:configChanges="colorMode|density|fontScale|fontWeightAdjustment|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode"
+            android:windowSoftInputMode="adjustResize"
+            android:enableOnBackInvokedCallback="true"
+            android:resizeableActivity="true"
+            android:exported="false" />
+
+        <!-- Must stay in MainActivity's task, which singleTask clears; in its own task it would outlive its proxy. -->
+        <activity
+            android:name="net.nodeinnet.gtk.BrowserActivity"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault.DayNight"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
+            android:enableOnBackInvokedCallback="true"
+            android:exported="false" />
+
+        <activity
+            android:name="net.nodeinnet.gtk.VpnConsentActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:exported="false" />
+
+        <service
+            android:name="net.nodeinnet.gtk.NodeVpnService"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="systemExempted|specialUse"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <!-- Else Settings offers Always-on, whose starts carry no apps and are refused. -->
+            <meta-data
+                android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
+                android:value="false" />
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Per-app VPN: the apps the user chose reach the internet through the user's own device" />
+        </service>
+    </application>
+</manifest>

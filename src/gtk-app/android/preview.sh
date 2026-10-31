@@ -2,13 +2,13 @@
 # Runs the GTK client with the phone layout (NODEINNET_MOBILE=1) on GTK's Broadway backend, in a
 # phone-sized window: open http://localhost:$((8080 + N)).
 #
-#   src/android-app/preview.sh [mock|live] [N]
+#   src/gtk-app/android/preview.sh [mock|live] [N]
 #
 # mock (default): sample devices and an accept-anything login, no account needed.
 set -euo pipefail
 MODE="${1:-mock}"
 N="${2:-6}"
-APP="$(cd "$(dirname "$0")/../.." && pwd)"
+APP="$(cd "$(dirname "$0")/../../.." && pwd)"
 STATE="$APP/bin/android-preview"
 cd "$APP"
 cargo build -q -p nodeinnet-gtk

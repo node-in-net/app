@@ -4,12 +4,15 @@ use nodeinnet_p2p::P2pMessage;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 const PORT_BASE: u16 = 54145;
 const PORT_SPAN: u16 = 100;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// For the FIN to the app; a stream whose app never answers it is given up.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 pub struct SocksProxy {
     port: u16,
@@ -178,46 +181,85 @@ async fn handle_conn(
     stream.read_exact(&mut port).await?;
     let port = u16::from_be_bytes(port);
 
+    let (stream_id, events) =
+        match connect_through_peer(&host, port, &peer_id, &resource_id, &net_tx, &router).await {
+            Ok(opened) => opened,
+            Err(e) => {
+                eprintln!("[net] ✗ {e}");
+                stream
+                    .write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                    .await?;
+                return Ok(());
+            }
+        };
+    stream
+        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
+    pump(
+        stream,
+        stream_id,
+        events,
+        peer_id,
+        resource_id,
+        net_tx,
+        router,
+    )
+    .await;
+    Ok(())
+}
+
+pub async fn connect_through_peer(
+    host: &str,
+    port: u16,
+    peer_id: &str,
+    resource_id: &str,
+    net_tx: &mpsc::Sender<NetCmd>,
+    router: &WebVpnRouter,
+) -> Result<(Uuid, mpsc::UnboundedReceiver<StreamEvent>), String> {
     let stream_id = Uuid::new_v4();
     let mut events = router.register_stream(stream_id);
     let _ = net_tx
         .send(NetCmd::SendToPeer(
-            peer_id.clone(),
+            peer_id.to_string(),
             P2pMessage::SocksConnectRequest {
-                resource_id: resource_id.clone(),
+                resource_id: resource_id.to_string(),
                 stream_id,
-                host: host.clone(),
+                host: host.to_string(),
                 port,
             },
         ))
         .await;
 
-    let outcome = tokio::time::timeout(Duration::from_secs(10), events.recv()).await;
-    let connected = match &outcome {
-        Ok(Some(StreamEvent::Connected { is_success, .. })) => *is_success,
-        _ => false,
+    let failure = match tokio::time::timeout(CONNECT_TIMEOUT, events.recv()).await {
+        Ok(Some(StreamEvent::Connected {
+            is_success: true, ..
+        })) => return Ok((stream_id, events)),
+        // No host: stderr reaches logcat on the phone, and the hosts are the user's browsing.
+        Ok(Some(StreamEvent::Connected { error_msg, .. })) => format!(
+            "{peer_id} refused a connection: {}",
+            error_msg.unwrap_or_else(|| "no reason given".into())
+        ),
+        Ok(_) => format!("{peer_id} closed a stream before it opened"),
+        Err(_) => format!("{peer_id} did not answer a connect"),
     };
-    if !connected {
-        match outcome {
-            Ok(Some(StreamEvent::Connected { error_msg, .. })) => eprintln!(
-                "[net] ✗ {peer_id} refused {host}:{port}: {}",
-                error_msg.unwrap_or_else(|| "no reason given".into())
-            ),
-            Ok(_) => eprintln!("[net] ✗ {peer_id} closed the stream to {host}:{port}"),
-            Err(_) => eprintln!("[net] ✗ {peer_id} did not answer for {host}:{port}"),
-        }
-        stream
-            .write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-            .await?;
-        router.close_stream(stream_id);
-        return Ok(());
-    }
-    stream
-        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-        .await?;
+    router.close_stream(stream_id);
+    Err(failure)
+}
 
-    let (mut rd, mut wr) = stream.into_split();
-    tokio::spawn(async move {
+/// Both halves stay in the caller's task: the stream is dropped where the caller drops this future.
+pub async fn pump<S>(
+    stream: S,
+    stream_id: Uuid,
+    mut events: mpsc::UnboundedReceiver<StreamEvent>,
+    peer_id: String,
+    resource_id: String,
+    net_tx: mpsc::Sender<NetCmd>,
+    router: Arc<WebVpnRouter>,
+) where
+    S: AsyncRead + AsyncWrite + Send,
+{
+    let (mut rd, mut wr) = tokio::io::split(stream);
+    let downstream = async move {
         while let Some(ev) = events.recv().await {
             match ev {
                 StreamEvent::Data(d) => {
@@ -229,43 +271,44 @@ async fn handle_conn(
                 StreamEvent::Connected { .. } => {}
             }
         }
-        let _ = wr.shutdown().await;
-    });
-
-    let mut buf = [0u8; 16384];
-    loop {
-        match rd.read(&mut buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                router.count_up(n);
-                if net_tx
-                    .send(NetCmd::SendToPeer(
-                        peer_id.clone(),
-                        P2pMessage::SocksData {
-                            resource_id: resource_id.clone(),
-                            stream_id,
-                            data: buf[..n].to_vec(),
-                        },
-                    ))
-                    .await
-                    .is_err()
-                {
-                    break;
+        let _ = tokio::time::timeout(SHUTDOWN_GRACE, wr.shutdown()).await;
+    };
+    let upstream = async {
+        let mut buf = [0u8; 16384];
+        loop {
+            match rd.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    router.count_up(n);
+                    if net_tx
+                        .send(NetCmd::SendToPeer(
+                            peer_id.clone(),
+                            P2pMessage::SocksData {
+                                resource_id: resource_id.clone(),
+                                stream_id,
+                                data: buf[..n].to_vec(),
+                            },
+                        ))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
         }
-    }
-    let _ = net_tx
-        .send(NetCmd::SendToPeer(
-            peer_id,
-            P2pMessage::SocksClose {
-                resource_id,
-                stream_id,
-            },
-        ))
-        .await;
-    router.close_stream(stream_id);
-    Ok(())
+        let _ = net_tx
+            .send(NetCmd::SendToPeer(
+                peer_id.clone(),
+                P2pMessage::SocksClose {
+                    resource_id: resource_id.clone(),
+                    stream_id,
+                },
+            ))
+            .await;
+        router.close_stream(stream_id);
+    };
+    tokio::join!(downstream, upstream);
 }
 
 #[cfg(test)]
@@ -336,6 +379,123 @@ mod tests {
         assert_eq!(&echo, b"ping", "data tunnelled and echoed back");
 
         assert_eq!(router.totals().streams_opened, 1);
+    }
+
+    fn echo_peer(
+        router: Arc<WebVpnRouter>,
+        mut net_rx: mpsc::Receiver<NetCmd>,
+    ) -> mpsc::UnboundedReceiver<P2pMessage> {
+        let (seen_tx, seen) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(NetCmd::SendToPeer(_peer, msg)) = net_rx.recv().await {
+                let _ = seen_tx.send(msg.clone());
+                match msg {
+                    P2pMessage::SocksConnectRequest {
+                        resource_id,
+                        stream_id,
+                        ..
+                    } => {
+                        router.route(P2pMessage::SocksConnectResponse {
+                            resource_id,
+                            stream_id,
+                            is_success: true,
+                            error_msg: None,
+                        });
+                    }
+                    P2pMessage::SocksData {
+                        resource_id,
+                        stream_id,
+                        data,
+                    } => {
+                        router.route(P2pMessage::SocksData {
+                            resource_id,
+                            stream_id,
+                            data,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        });
+        seen
+    }
+
+    #[tokio::test]
+    async fn the_relay_carries_any_byte_stream_not_only_a_socket() {
+        let router = WebVpnRouter::new();
+        let (net_tx, net_rx) = mpsc::channel::<NetCmd>(64);
+        let mut seen = echo_peer(router.clone(), net_rx);
+
+        let (stream_id, events) =
+            connect_through_peer("example.test", 80, "peer-1", "res-1", &net_tx, &router)
+                .await
+                .expect("the peer accepted");
+        let (app, ours) = tokio::io::duplex(64 * 1024);
+        let relay = tokio::spawn(pump(
+            ours,
+            stream_id,
+            events,
+            "peer-1".into(),
+            "res-1".into(),
+            net_tx,
+            router.clone(),
+        ));
+
+        let (mut rd, mut wr) = tokio::io::split(app);
+        wr.write_all(b"ping").await.unwrap();
+        let mut echo = [0u8; 4];
+        rd.read_exact(&mut echo).await.unwrap();
+        assert_eq!(&echo, b"ping");
+
+        wr.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), relay)
+            .await
+            .expect("the relay ends when the app closes")
+            .unwrap();
+        let mut closed = false;
+        while let Ok(msg) = seen.try_recv() {
+            closed |=
+                matches!(msg, P2pMessage::SocksClose { stream_id: id, .. } if id == stream_id);
+        }
+        assert!(closed, "the peer is told");
+        let totals = router.totals();
+        assert_eq!((totals.streams_opened, totals.streams_closed), (1, 1));
+        assert_eq!((totals.bytes_up, totals.bytes_down), (4, 4));
+    }
+
+    #[tokio::test]
+    async fn a_refused_connect_leaves_no_stream_behind() {
+        let router = WebVpnRouter::new();
+        let (net_tx, mut net_rx) = mpsc::channel::<NetCmd>(8);
+        let peer = router.clone();
+        tokio::spawn(async move {
+            while let Some(NetCmd::SendToPeer(_, msg)) = net_rx.recv().await {
+                if let P2pMessage::SocksConnectRequest {
+                    resource_id,
+                    stream_id,
+                    ..
+                } = msg
+                {
+                    peer.route(P2pMessage::SocksConnectResponse {
+                        resource_id,
+                        stream_id,
+                        is_success: false,
+                        error_msg: Some("on a local network".into()),
+                    });
+                }
+            }
+        });
+
+        let err = connect_through_peer("192.168.1.1", 80, "peer-1", "res-1", &net_tx, &router)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("refused") && err.contains("local network"),
+            "{err}"
+        );
+        let totals = router.totals();
+        assert_eq!(totals.errors, 1);
+        assert_eq!(totals.streams_opened, totals.streams_closed);
     }
 
     #[tokio::test]

@@ -461,7 +461,7 @@ EOF
         export PATH=$JAVA_HOME/bin:$PATH
         export GRADLE_USER_HOME="$WORKDIR/bin/distr/gradle-home-shared"
 
-        # GTK_STACK: the stack nodeinnet-builder.yml mounts; unset, src/android-app/build.sh fetches the release gtk-stack.lock pins.
+        # GTK_STACK: the stack nodeinnet-builder.yml mounts; unset, src/gtk-app/android/build.sh fetches the release gtk-stack.lock pins.
         if [ -n "${GTK_STACK:-}" ] && [ ! -d "$GTK_STACK/bin/gtk-stack/apk" ]; then
             log_error "No GTK stack at GTK_STACK=$GTK_STACK (GTK_STACK_HOST: see builder/build-node-in-net.sh)"
             exit 1
@@ -471,15 +471,15 @@ EOF
 
         # A stable debug signature across machines, so an APK installs over the previous one.
         mkdir -p ~/.android
-        if [ -f "./src/android-app/debug.keystore" ]; then
-            cp "./src/android-app/debug.keystore" ~/.android/debug.keystore
+        if [ -f "./src/gtk-app/android/debug.keystore" ]; then
+            cp "./src/gtk-app/android/debug.keystore" ~/.android/debug.keystore
         fi
 
         log_info "Building the Android APK..."
         npm run build-android
 
         if [ -f ~/.android/debug.keystore ]; then
-            cp ~/.android/debug.keystore "./src/android-app/debug.keystore"
+            cp ~/.android/debug.keystore "./src/gtk-app/android/debug.keystore"
         fi
 
         mkdir -p "$OUT_DIR"

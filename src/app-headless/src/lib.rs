@@ -34,6 +34,10 @@ pub struct App {
     pub wizard_fields: std::collections::BTreeMap<String, String>,
     pub registry_view: Option<serde_json::Value>,
     pub socks: std::sync::Arc<app_net::SocksManager>,
+    #[cfg(unix)]
+    pub vpn: Option<app_net::VpnTunnel>,
+    pub vpn_changed: bool,
+    pub vpn_generation: u64,
 }
 
 impl App {
@@ -275,6 +279,15 @@ pub enum ApiCmd {
         reply: oneshot::Sender<Option<u16>>,
     },
     WebVpnCloseProxies,
+    #[cfg(unix)]
+    VpnAttach {
+        fd: std::os::fd::OwnedFd,
+        mtu: u16,
+        peer: String,
+        reply: oneshot::Sender<bool>,
+    },
+    VpnDetach,
+    VpnCancelled,
 
     RegistryRequestKeys {
         path: String,
@@ -837,6 +850,30 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
             let _ = reply.send(port);
         }
         WebVpnCloseProxies => app.socks.release_proxies(),
+        #[cfg(unix)]
+        VpnAttach {
+            fd,
+            mtu,
+            peer,
+            reply,
+        } => {
+            app.vpn = None;
+            let _ = reply.send(start_vpn(app, fd, mtu, peer));
+            app.vpn_generation += 1;
+            app.vpn_changed = true;
+        }
+        VpnDetach => {
+            #[cfg(unix)]
+            {
+                app.vpn = None;
+            }
+            app.vpn_generation += 1;
+            app.vpn_changed = true;
+        }
+        VpnCancelled => {
+            app.vpn_generation += 1;
+            app.vpn_changed = true;
+        }
 
         RegistryRequestKeys { path } => app.reg.request_keys(path).await,
         RegistryCreateKey {
@@ -883,6 +920,7 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
                 .is_some_and(|id| app.nodes.iter().any(|n| &n.id == id && n.is_online));
             app.nodes = nodes;
             sync_devices(app);
+            call_vpn_peer_back(app);
             if let Some(id) = selected {
                 let now_online = app.nodes.iter().any(|n| n.id == id && n.is_online);
                 if now_online && !was_online {
@@ -890,11 +928,20 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
                 }
             }
         }
-        NetPeerGone { peer } => app.socks.close_peer(&peer),
+        NetPeerGone { peer } => {
+            app.socks.close_peer(&peer);
+            vpn_link(app, &peer, false);
+        }
         NetWsState { connected } => {
             app.workspace.set_server_online(connected);
         }
         NetPeerState { peer, state } => {
+            // Connecting proves nothing: in-place recovery sends no new handshake; the VPN probes.
+            match state {
+                app_core::workspace::LinkState::Connected => vpn_link(app, &peer, true),
+                app_core::workspace::LinkState::Connecting => {}
+                _ => vpn_link(app, &peer, false),
+            }
             app.peer_links.insert(peer, state);
             sync_devices(app);
         }
@@ -913,6 +960,7 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
                 "terminal": app.terminal.state(),
                 "desktop": app.desktop.state(),
                 "webvpn": app.webvpn.state(),
+                "vpn": vpn_state(app),
                 "sysinfo": app.sysinfo.state(),
                 "session": app.session.state(),
                 "visible_page": app.visible_page,
@@ -1037,6 +1085,7 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
                     push_session_change(app, &gone.peer_id, "exited");
                 }
             }
+            app.vpn_changed |= vpn_state(app).running;
         }
         QueryWebVpn { reply } => {
             let _ = reply.send(app.webvpn.state());
@@ -1115,6 +1164,85 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
         QueryDesktopRouter { reply } => {
             let _ = reply.send(app.desktop.router());
         }
+    }
+}
+
+#[cfg(unix)]
+fn start_vpn(app: &mut App, fd: std::os::fd::OwnedFd, mtu: u16, peer: String) -> bool {
+    let Some(net) = &app.net else {
+        return false;
+    };
+    let Some(resource) =
+        app.nodes.iter().find(|n| n.id == peer).and_then(|node| {
+            app_net::first_resource(node, nodeinnet_p2p::ResourceType::SharedNetwork)
+        })
+    else {
+        eprintln!("[vpn] ✗ {peer} shares no network");
+        return false;
+    };
+    let online = matches!(
+        app.peer_links.get(&peer),
+        Some(app_core::workspace::LinkState::Connected)
+    );
+    if !online {
+        net.call_peer(peer.clone());
+    }
+    match app_net::VpnTunnel::start(
+        fd,
+        mtu,
+        peer,
+        resource,
+        online,
+        net.net_tx.clone(),
+        net.routers.clone(),
+    ) {
+        Ok(vpn) => {
+            app.vpn = Some(vpn);
+            true
+        }
+        Err(e) => {
+            eprintln!("[vpn] ✗ cannot start: {e}");
+            false
+        }
+    }
+}
+
+fn vpn_state(app: &App) -> app_core::webvpn::VpnState {
+    #[cfg(unix)]
+    let state = app.vpn.as_ref().map(|vpn| vpn.state()).unwrap_or_default();
+    #[cfg(not(unix))]
+    let state = app_core::webvpn::VpnState::default();
+    app_core::webvpn::VpnState {
+        generation: app.vpn_generation,
+        ..state
+    }
+}
+
+#[cfg(unix)]
+fn vpn_link(app: &mut App, peer: &str, online: bool) {
+    if let Some(vpn) = app.vpn.as_ref().filter(|v| v.peer_id() == peer) {
+        vpn.set_online(online);
+        app.vpn_changed = true;
+    }
+}
+
+#[cfg(not(unix))]
+fn vpn_link(_app: &mut App, _peer: &str, _online: bool) {}
+
+fn call_vpn_peer_back(app: &App) {
+    let peer = vpn_state(app).peer;
+    let (Some(net), Some(peer)) = (&app.net, peer) else {
+        return;
+    };
+    let back = app.nodes.iter().any(|n| n.id == peer && n.is_online);
+    let linked = matches!(
+        app.peer_links.get(&peer),
+        Some(
+            app_core::workspace::LinkState::Connected | app_core::workspace::LinkState::Connecting
+        )
+    );
+    if back && !linked {
+        net.call_peer(peer);
     }
 }
 
@@ -1292,6 +1420,10 @@ async fn core_loop(
             continue;
         }
         apply(&mut app, cmd).await;
+        if std::mem::take(&mut app.vpn_changed) {
+            let _ =
+                events.send(json!({ "event": "vpn_changed", "vpn": vpn_state(&app) }).to_string());
+        }
         for ev in app.workspace.take_events() {
             let _ = events.send(serde_json::to_string(&ev).expect("serializable event"));
         }
@@ -2154,5 +2286,68 @@ where
         port: 0,
         cmd: cmd_tx,
         events: ev_tx,
+    }
+}
+
+#[cfg(all(test, unix))]
+mod vpn_tests {
+    use super::*;
+    use app_core::workspace::LinkState;
+
+    #[tokio::test]
+    async fn the_vpn_goes_offline_when_the_link_drops_and_back_on_a_new_handshake() {
+        let (ours, _phone) = std::os::unix::net::UnixDatagram::pair().unwrap();
+        let (net_tx, _net_rx) = mpsc::channel(8);
+        let mut app = App::new();
+        app.vpn = Some(
+            app_net::VpnTunnel::start(
+                ours.into(),
+                1500,
+                "peer-1".into(),
+                "network-peer-1".into(),
+                false,
+                net_tx,
+                app_net::Routers::new(),
+            )
+            .unwrap(),
+        );
+        let state = |peer: &str, state| ApiCmd::NetPeerState {
+            peer: peer.into(),
+            state,
+        };
+
+        apply(&mut app, state("peer-1", LinkState::Connected)).await;
+        assert!(vpn_state(&app).online);
+        apply(&mut app, state("peer-2", LinkState::Idle)).await;
+        assert!(vpn_state(&app).online, "another peer's link");
+        for link in [LinkState::Idle, LinkState::Failed] {
+            apply(&mut app, state("peer-1", LinkState::Connected)).await;
+            apply(&mut app, state("peer-1", link)).await;
+            assert!(!vpn_state(&app).online, "{link:?} drops the VPN's streams");
+        }
+        apply(&mut app, state("peer-1", LinkState::Connecting)).await;
+        assert!(
+            !vpn_state(&app).online,
+            "a reconnect in progress proves nothing; a probe connection will"
+        );
+        apply(&mut app, state("peer-1", LinkState::Connected)).await;
+        apply(
+            &mut app,
+            ApiCmd::NetPeerGone {
+                peer: "peer-1".into(),
+            },
+        )
+        .await;
+        assert!(!vpn_state(&app).online, "the session closed");
+    }
+
+    #[tokio::test]
+    async fn only_a_start_a_stop_or_an_abandoned_start_moves_the_generation() {
+        let mut app = App::new();
+        let before = vpn_state(&app).generation;
+        apply(&mut app, ApiCmd::VpnCancelled).await;
+        apply(&mut app, ApiCmd::VpnDetach).await;
+        apply(&mut app, ApiCmd::ReapTick).await;
+        assert_eq!(vpn_state(&app).generation, before + 2);
     }
 }

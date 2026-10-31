@@ -98,12 +98,12 @@ first appears:
   core through, and what the test suite plays a session against. A feature that
   cannot be reached from here cannot be tested without a mouse.
 - **`gtk-app`** — the GTK window. It renders what the core pushes and reports
-  what the user did; it must not perform an operation itself.
+  what the user did; it must not perform an operation itself. On Android it is
+  the same crate: the phone layout is a branch of the same code
+  (`Platform::mobile`); `src/android` holds the entry point and the JNI calls,
+  `android/` the Gradle project.
 - **`console-app`** — the headless node. Console output here is its interface,
   unlike everywhere else.
-- **`android-app`** — `gtk-app` itself on Android: the phone layout is a branch
-  of the same code (`Platform::mobile`), and this crate is only the entry point,
-  the JNI calls and the Gradle project.
 - **`wasm-node`** — a thin WebAssembly wrapper around the same core. Logic added
   here would have to be written twice; put it in `app-core`.
 

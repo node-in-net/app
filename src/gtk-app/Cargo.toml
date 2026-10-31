@@ -2,8 +2,12 @@
 name = "nodeinnet-gtk"
 version = "0.5.513"
 edition = "2021"
-description = "node.in.net desktop client: a GTK4/libadwaita peer-to-peer node."
+description = "node.in.net client for the desktop and Android: a GTK4/libadwaita peer-to-peer node."
 license = "MIT OR Apache-2.0"
+
+# On Android GTK's runtime loads this library (android/build.sh builds it as a cdylib) and runs its main().
+[lib]
+name = "nodeinnet_gtk"
 
 [[bin]]
 name = "nodeinnet-gtk"
@@ -48,6 +52,10 @@ windows-sys = { version = "0.52.0", features = [
     "Win32_Foundation",
     "Win32_System_Console",
 ] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+libc = "0.2"
 
 [build-dependencies]
 winresource = "0.1"

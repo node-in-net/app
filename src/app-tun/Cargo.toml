@@ -1,0 +1,17 @@
+[package]
+name = "app-tun"
+version = "0.5.513"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "A TUN device's IP packets as TCP streams to a destination by name, with DNS answered in-process from a pool of fake addresses: the engine of the phone's per-app VPN. Platform-neutral: a file descriptor in, streams out."
+publish = false
+
+[dependencies]
+ipstack = "1.0.1"
+tokio = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+etherparse = "0.20"
