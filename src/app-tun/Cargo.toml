@@ -1,6 +1,6 @@
 [package]
 name = "app-tun"
-version = "0.5.513"
+version = "0.6.540"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A TUN device's IP packets as TCP streams to a destination by name, with DNS answered in-process from a pool of fake addresses: the engine of the phone's per-app VPN. Platform-neutral: a file descriptor in, streams out."

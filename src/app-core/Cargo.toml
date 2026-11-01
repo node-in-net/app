@@ -1,6 +1,6 @@
 [package]
 name = "app-core"
-version = "0.5.513"
+version = "0.6.540"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "UI-agnostic action layer for the remake client: all view-state and user actions live here; GTK and the headless REST/WS server drive the same methods (specs/19 §3)."

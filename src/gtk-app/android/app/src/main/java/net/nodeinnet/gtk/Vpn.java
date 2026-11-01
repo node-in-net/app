@@ -5,6 +5,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.drawable.Drawable;
+import java.io.ByteArrayOutputStream;
 import java.text.Collator;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -63,5 +67,21 @@ public final class Vpn {
 			flat[2 * i + 1] = sorted.get(i).getValue();
 		}
 		return flat;
+	}
+
+	public static byte[] appIcon(Context context, String pkg, int size) {
+		Drawable icon;
+		try {
+			icon = context.getPackageManager().getApplicationIcon(pkg);
+		} catch (PackageManager.NameNotFoundException e) {
+			return null;
+		}
+		Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+		icon.setBounds(0, 0, size, size);
+		icon.draw(new Canvas(bitmap));
+		ByteArrayOutputStream png = new ByteArrayOutputStream();
+		bitmap.compress(Bitmap.CompressFormat.PNG, 100, png);
+		bitmap.recycle();
+		return png.toByteArray();
 	}
 }

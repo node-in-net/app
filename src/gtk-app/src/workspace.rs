@@ -196,7 +196,7 @@ fn apply_filter(list: &gtk::ListBox, needle: &str) {
 
 /// The phone's Network tab: the peer's shared network is used through an in-app browser.
 struct BrowserPage {
-    widget: gtk::Box,
+    widget: gtk::ScrolledWindow,
     hint: gtk::Label,
     open: gtk::Button,
     vpn: Option<crate::vpn::VpnSection>,
@@ -204,21 +204,23 @@ struct BrowserPage {
 
 impl BrowserPage {
     fn new(cmd: &UnboundedSender<ApiCmd>, config: &client_config::AppConfig) -> Self {
-        let widget = gtk::Box::new(gtk::Orientation::Vertical, 18);
-        widget.set_valign(gtk::Align::Center);
-        widget.set_margin_start(24);
-        widget.set_margin_end(24);
-        widget.append(&icons::image("vpn", 72));
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 18);
+        column.set_valign(gtk::Align::Center);
+        column.set_margin_top(24);
+        column.set_margin_bottom(24);
+        column.set_margin_start(24);
+        column.set_margin_end(24);
+        column.append(&icons::image("vpn", 72));
         let hint = gtk::Label::new(None);
         hint.set_wrap(true);
         hint.set_justify(gtk::Justification::Center);
         hint.add_css_class("dim-label");
-        widget.append(&hint);
+        column.append(&hint);
         let open = gtk::Button::with_label(&i18n::tr("browser.open"));
         open.add_css_class("suggested-action");
         open.add_css_class("pill");
         open.set_halign(gtk::Align::Center);
-        widget.append(&open);
+        column.append(&open);
         {
             let cmd = cmd.clone();
             let hint = hint.clone();
@@ -249,8 +251,17 @@ impl BrowserPage {
             .app_vpn()
             .then(|| crate::vpn::VpnSection::new(config));
         if let Some(vpn) = &vpn {
-            widget.append(&vpn.widget);
+            column.append(&vpn.widget);
         }
+        let widget = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .child(
+                &adw::Clamp::builder()
+                    .maximum_size(560)
+                    .child(&column)
+                    .build(),
+            )
+            .build();
         Self {
             widget,
             hint,
@@ -329,9 +340,13 @@ fn offline_placeholder() -> gtk::Widget {
     b.append(&icons::image("disconnect", 72));
     let t = gtk::Label::new(Some(&i18n::tr("workspace.device_offline")));
     t.add_css_class("title-2");
+    t.set_wrap(true);
+    t.set_justify(gtk::Justification::Center);
     b.append(&t);
     let s = gtk::Label::new(Some(&i18n::tr("workspace.device_offline_hint")));
     s.add_css_class("dim-label");
+    s.set_wrap(true);
+    s.set_justify(gtk::Justification::Center);
     b.append(&s);
     b.upcast()
 }
@@ -679,10 +694,18 @@ impl WorkspaceModel {
         if let (Some(browser), Some(device)) = (&self.browser, selected) {
             browser.render(device, has_peer, connected, snap);
         }
+        // A link recovered in place reports Connecting and never Connected again.
+        let reachable = selected.is_some_and(|d| {
+            matches!(
+                d.link,
+                app_core::workspace::LinkState::Connected
+                    | app_core::workspace::LinkState::Connecting
+            )
+        });
         let _ = self.network.sender().send(NetworkInput::SetContext {
             peer_name,
             has_peer,
-            connected,
+            connected: reachable,
         });
     }
 
@@ -1300,18 +1323,6 @@ fn build_network(
             NetworkOutput::Launch(exec_cmd) => {
                 let _ = cmd_out.send(ApiCmd::WebVpnLaunch { exec_cmd });
             }
-            NetworkOutput::AllowRemoteLaunch { id, allowed } => {
-                let _ = cmd_out.send(ApiCmd::SetAppRemoteLaunch { id, allowed });
-            }
-            NetworkOutput::RefreshRemoteApps => {
-                let _ = cmd_out.send(ApiCmd::RemoteAppsRefresh);
-            }
-            NetworkOutput::LaunchThere(app_id) => {
-                let _ = cmd_out.send(ApiCmd::RemoteAppLaunchThere { app_id });
-            }
-            NetworkOutput::StopThere(session_id) => {
-                let _ = cmd_out.send(ApiCmd::RemoteAppStopThere { session_id });
-            }
             NetworkOutput::Back => {}
         });
 
@@ -1355,13 +1366,6 @@ fn build_network(
                         rx: now.2,
                         tx: now.3,
                     });
-                }
-
-                let (tx, rx) = oneshot::channel();
-                if cmd.send(ApiCmd::QueryRemoteApps { reply: tx }).is_ok() {
-                    if let Ok(view) = rx.await {
-                        let _ = net_sender.send(NetworkInput::RemoteApps(view));
-                    }
                 }
             });
         },

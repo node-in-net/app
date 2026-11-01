@@ -475,7 +475,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app-core"
-version = "0.5.513"
+version = "0.6.540"
 dependencies = [
  "async-trait",
  "common",
@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "app-headless"
-version = "0.5.513"
+version = "0.6.540"
 dependencies = [
  "actix",
  "actix-web",
@@ -514,7 +514,7 @@ dependencies = [
 
 [[package]]
 name = "app-net"
-version = "0.5.513"
+version = "0.6.540"
 dependencies = [
  "app-core",
  "app-tun",
@@ -537,7 +537,7 @@ dependencies = [
 
 [[package]]
 name = "app-tun"
-version = "0.5.513"
+version = "0.6.540"
 dependencies = [
  "etherparse",
  "ipstack",
@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "app-version"
-version = "0.5.513"
+version = "0.6.540"
 
 [[package]]
 name = "arc-swap"
@@ -1276,7 +1276,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "client-config"
-version = "0.1.286"
+version = "0.6.540"
 dependencies = [
  "dirs",
  "nodeinnet-p2p",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.1.286"
+version = "0.6.540"
 dependencies = [
  "nodeinnet-utils",
  "serde",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "console-app"
-version = "0.5.513"
+version = "0.6.540"
 dependencies = [
  "app-version",
  "async-trait",
@@ -2278,7 +2278,7 @@ dependencies = [
 
 [[package]]
 name = "fm-core"
-version = "0.1.0"
+version = "0.6.540"
 dependencies = [
  "async-trait",
  "common",
@@ -2977,7 +2977,7 @@ dependencies = [
 
 [[package]]
 name = "gtk-dialogs"
-version = "0.1.0"
+version = "0.6.540"
 dependencies = [
  "gtk4",
  "libadwaita",
@@ -2987,7 +2987,7 @@ dependencies = [
 
 [[package]]
 name = "gtk-fm-ui"
-version = "0.1.286"
+version = "0.6.540"
 dependencies = [
  "chrono",
  "client-config",
@@ -3008,7 +3008,7 @@ dependencies = [
 
 [[package]]
 name = "gtk-graph-ui"
-version = "0.1.286"
+version = "0.6.540"
 dependencies = [
  "client-config",
  "glib-build-tools",
@@ -3022,9 +3022,8 @@ dependencies = [
 
 [[package]]
 name = "gtk-net-ui"
-version = "0.1.286"
+version = "0.6.540"
 dependencies = [
- "app-core",
  "chrono",
  "client-config",
  "glib-build-tools",
@@ -3042,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "gtk-rdesk-ui"
-version = "0.1.299"
+version = "0.6.540"
 dependencies = [
  "client-config",
  "glib-build-tools",
@@ -3060,7 +3059,7 @@ dependencies = [
 
 [[package]]
 name = "gtk-registry-ui"
-version = "0.1.0"
+version = "0.6.540"
 dependencies = [
  "gdk-pixbuf",
  "glib-build-tools",
@@ -3075,7 +3074,7 @@ dependencies = [
 
 [[package]]
 name = "gtk-sync-ui"
-version = "0.1.286"
+version = "0.6.540"
 dependencies = [
  "chrono",
  "client-config",
@@ -3093,7 +3092,7 @@ dependencies = [
 
 [[package]]
 name = "gtk-sysinfo-ui"
-version = "0.1.286"
+version = "0.6.540"
 dependencies = [
  "glib-build-tools",
  "gtk-dialogs",
@@ -3106,7 +3105,7 @@ dependencies = [
 
 [[package]]
 name = "gtk-terminal-ui"
-version = "0.1.0"
+version = "0.6.540"
 dependencies = [
  "client-config",
  "glib-build-tools",
@@ -3121,7 +3120,7 @@ dependencies = [
 
 [[package]]
 name = "gtk-updater-ui"
-version = "0.1.286"
+version = "0.6.540"
 dependencies = [
  "gtk4",
  "libadwaita",
@@ -3131,7 +3130,7 @@ dependencies = [
 
 [[package]]
 name = "gtk-viewer-ui"
-version = "0.1.286"
+version = "0.6.540"
 dependencies = [
  "common",
  "fm-core",
@@ -4212,7 +4211,7 @@ dependencies = [
 
 [[package]]
 name = "node-auth"
-version = "0.1.286"
+version = "0.6.540"
 dependencies = [
  "client-config",
  "common",
@@ -4254,7 +4253,7 @@ dependencies = [
 
 [[package]]
 name = "node-network"
-version = "0.1.286"
+version = "0.6.540"
 dependencies = [
  "lazy_static",
  "libc",
@@ -4281,7 +4280,7 @@ dependencies = [
 
 [[package]]
 name = "nodeinnet-gtk"
-version = "0.5.513"
+version = "0.6.540"
 dependencies = [
  "app-core",
  "app-headless",
@@ -4323,7 +4322,7 @@ dependencies = [
 
 [[package]]
 name = "nodeinnet-i18n"
-version = "0.1.0"
+version = "0.6.540"
 dependencies = [
  "serde_json",
 ]
@@ -4351,7 +4350,7 @@ dependencies = [
 
 [[package]]
 name = "nodeinnet-utils"
-version = "0.1.0"
+version = "0.6.540"
 
 [[package]]
 name = "nom"
@@ -7062,7 +7061,7 @@ dependencies = [
 
 [[package]]
 name = "wasm-node"
-version = "0.5.513"
+version = "0.6.540"
 dependencies = [
  "app-version",
  "console_error_panic_hook",

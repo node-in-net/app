@@ -117,6 +117,7 @@ fn reassure(text: &str) -> gtk::Box {
     row.append(&icons::image("agreement", 14));
     let l = gtk::Label::new(Some(text));
     l.add_css_class("reassure");
+    l.set_wrap(true);
     row.append(&l);
     row
 }
@@ -124,6 +125,9 @@ fn reassure(text: &str) -> gtk::Box {
 fn title(text: &str) -> gtk::Label {
     let l = gtk::Label::new(Some(text));
     l.add_css_class("title-1");
+    l.set_wrap(true);
+    l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    l.set_justify(gtk::Justification::Center);
     l
 }
 

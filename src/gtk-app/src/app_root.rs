@@ -240,7 +240,8 @@ impl SimpleComponent for AppModel {
                 });
             });
         }
-        if !cfg!(target_os = "macos") {
+        // Android draws no window buttons for it to separate from.
+        if !cfg!(any(target_os = "macos", target_os = "android")) {
             header.pack_end(
                 &gtk::Separator::builder()
                     .orientation(gtk::Orientation::Vertical)

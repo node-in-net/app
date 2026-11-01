@@ -1,6 +1,6 @@
 [package]
 name = "node-auth"
-version = "0.1.286"
+version = "0.6.540"
 edition = "2021"
 description = "NodeInNet Authentication UI & Logic"
 publish = false

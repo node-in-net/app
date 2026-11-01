@@ -171,6 +171,7 @@ impl SimpleComponent for RegistryModel {
                 .orientation(gtk::Orientation::Vertical)
                 .margin_top(8)
                 .margin_bottom(8)
+                .visible(!gtk_dialogs::touch())
                 .build(),
         );
 

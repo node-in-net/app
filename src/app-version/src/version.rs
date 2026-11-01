@@ -1,3 +1,3 @@
-pub const APP_VERSION: &str = "0.5.513";
-pub const APP_TYPE: &str = "gui";
-pub const BUILD_TYPE: &str = "exe";
+pub const APP_VERSION: &str = "0.6.540";
+pub const APP_TYPE: &str = "mobile";
+pub const BUILD_TYPE: &str = "apk";

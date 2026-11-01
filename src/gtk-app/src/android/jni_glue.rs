@@ -1,7 +1,7 @@
 use gtk::{gdk, glib::translate::ToGlibPtr, prelude::*};
 use jni::{
     errors::{Error, Result as JniResult},
-    objects::{JClass, JObject, JObjectArray, JString, JValue},
+    objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue},
     sys::{jboolean, jint, JNI_FALSE},
     JNIEnv,
 };
@@ -210,6 +210,33 @@ pub fn launcher_apps(window: &gtk::Window) -> Vec<(String, String)> {
     listed.unwrap_or_else(|e| {
         gtk::glib::g_warning!("nodeinnet", "cannot list the apps: {e}");
         Vec::new()
+    })
+}
+
+pub fn app_icon(window: &gtk::Window, package: &str, size: i32) -> Option<Vec<u8>> {
+    let icon = with_activity(window, |env, activity| {
+        let vpn = app_class(env, activity, "net.nodeinnet.gtk.Vpn")?;
+        let package = env.new_string(package)?;
+        let png = env
+            .call_static_method(
+                &vpn,
+                "appIcon",
+                "(Landroid/content/Context;Ljava/lang/String;I)[B",
+                &[
+                    JValue::Object(activity),
+                    JValue::Object(&package),
+                    JValue::Int(size),
+                ],
+            )?
+            .l()?;
+        if png.is_null() {
+            return Ok(None);
+        }
+        env.convert_byte_array(JByteArray::from(png)).map(Some)
+    });
+    icon.unwrap_or_else(|e| {
+        gtk::glib::g_warning!("nodeinnet", "cannot read an app's icon: {e}");
+        None
     })
 }
 

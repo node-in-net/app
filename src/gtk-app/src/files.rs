@@ -279,6 +279,7 @@ fn build_single_pane(
 ) -> gtk::Label {
     let sides = gtk::Stack::new();
     sides.set_vexpand(true);
+    sides.set_hhomogeneous(false);
     sides.set_transition_type(gtk::StackTransitionType::SlideLeftRight);
     sides.add_named(left.widget(), Some("local"));
     sides.add_named(right.widget(), Some("remote"));

@@ -63,6 +63,11 @@ pub trait Platform {
     fn launcher_packages(&self, _window: &gtk::Window) -> Vec<String> {
         Vec::new()
     }
+
+    /// An app's icon, a PNG of `size` pixels square.
+    fn app_icon(&self, _window: &gtk::Window, _package: &str, _size: i32) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 pub struct Desktop {
@@ -108,7 +113,8 @@ impl Platform for Desktop {
         }
         Hosting {
             capabilities: Capabilities::ALL,
-            launch_apps: true,
+            // Nothing in the app grants or revokes a peer's launches here any more.
+            launch_apps: false,
         }
     }
 

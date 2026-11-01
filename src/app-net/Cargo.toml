@@ -1,6 +1,6 @@
 [package]
 name = "app-net"
-version = "0.5.513"
+version = "0.6.540"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Network wiring for the remake client: node runtime + router chain + auth/identity persistence + per-device provider factory. The old app's ui_event_loop.rs, refactored to the seams app-core defines (specs/19 §3, §5). GTK-free — used by the headless binary and the GTK shell alike."

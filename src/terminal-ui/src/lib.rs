@@ -98,6 +98,9 @@ impl SimpleComponent for TerminalModel {
         let last_size = Rc::new(Cell::new((ROWS, COLS)));
         let selection: Rc<Cell<Option<Selection>>> = Rc::new(Cell::new(None));
         let (cell_w, cell_h, ascent) = measure_cell();
+        // On a phone the text keeps off the screen's edges; the background still reaches them.
+        let pad = if gtk_dialogs::touch() { 8.0 } else { 0.0 };
+        let origin: Rc<Cell<(f64, f64)>> = Rc::new(Cell::new((0.0, 0.0)));
 
         let area = gtk::DrawingArea::new();
         area.set_focusable(true);
@@ -107,6 +110,7 @@ impl SimpleComponent for TerminalModel {
         let parser_draw = parser.clone();
         let colors_draw = colors.clone();
         let selection_draw = selection.clone();
+        let origin_draw = origin.clone();
         area.set_draw_func(move |_area, cr, _w, _h| {
             let term = colors_draw.get();
             let sel_span = selection_draw.get().map(|(a, b)| {
@@ -118,6 +122,8 @@ impl SimpleComponent for TerminalModel {
 
             cr.set_source_rgb(term.bg.0, term.bg.1, term.bg.2);
             let _ = cr.paint();
+            let (ox, oy) = origin_draw.get();
+            cr.translate(ox, oy);
             cr.set_font_size(FONT_SIZE);
 
             let (rows, cols) = screen.size();
@@ -178,9 +184,17 @@ impl SimpleComponent for TerminalModel {
         let parser_resize = parser.clone();
         let last_size_resize = last_size.clone();
         let sender_resize = sender.clone();
+        let origin_resize = origin.clone();
         area.connect_resize(move |_a, w, h| {
-            let cols = ((w as f64 / cell_w).floor() as u16).max(2);
-            let rows = ((h as f64 / cell_h).floor() as u16).max(2);
+            let (w, h) = (w as f64, h as f64);
+            let cols = (((w - 2.0 * pad) / cell_w).floor() as u16).max(2);
+            let rows = (((h - 2.0 * pad) / cell_h).floor() as u16).max(2);
+            let ox = if pad > 0.0 {
+                ((w - cols as f64 * cell_w) / 2.0).floor().max(0.0)
+            } else {
+                0.0
+            };
+            origin_resize.set((ox, pad));
             if last_size_resize.get() == (rows, cols) {
                 return;
             }
@@ -468,6 +482,7 @@ impl SimpleComponent for TerminalModel {
         let sel_db = selection.clone();
         let fwd_db = mouse_fwd.clone();
         let sender_db = sender.clone();
+        let origin_db = origin.clone();
         drag.connect_drag_begin(move |g, x, y| {
             area_db.grab_focus();
             let shift = g
@@ -475,13 +490,20 @@ impl SimpleComponent for TerminalModel {
                 .contains(gdk::ModifierType::SHIFT_MASK);
             let mode = parser_db.borrow().screen().mouse_protocol_mode();
             if !shift && mode != vt100::MouseProtocolMode::None {
-                let cell = px_to_cell(&parser_db, cell_w, cell_h, x, y);
+                let cell = px_to_cell(&parser_db, origin_db.get(), cell_w, cell_h, x, y);
                 fwd_db.set(Some(cell));
                 mouse_report(&parser_db, &sender_db, 0, cell, true, false);
                 return;
             }
             fwd_db.set(None);
-            anchor_db.set(Some(px_to_cell(&parser_db, cell_w, cell_h, x, y)));
+            anchor_db.set(Some(px_to_cell(
+                &parser_db,
+                origin_db.get(),
+                cell_w,
+                cell_h,
+                x,
+                y,
+            )));
             sel_db.set(None);
             area_db.queue_draw();
         });
@@ -492,6 +514,7 @@ impl SimpleComponent for TerminalModel {
         let sel_du = selection.clone();
         let fwd_du = mouse_fwd.clone();
         let sender_du = sender.clone();
+        let origin_du = origin.clone();
         drag.connect_drag_update(move |g, ox, oy| {
             let Some((sx, sy)) = g.start_point() else {
                 return;
@@ -502,7 +525,14 @@ impl SimpleComponent for TerminalModel {
                     mode,
                     vt100::MouseProtocolMode::ButtonMotion | vt100::MouseProtocolMode::AnyMotion
                 ) {
-                    let cell = px_to_cell(&parser_du, cell_w, cell_h, sx + ox, sy + oy);
+                    let cell = px_to_cell(
+                        &parser_du,
+                        origin_du.get(),
+                        cell_w,
+                        cell_h,
+                        sx + ox,
+                        sy + oy,
+                    );
                     if cell != last {
                         fwd_du.set(Some(cell));
                         mouse_report(&parser_du, &sender_du, 0, cell, true, true);
@@ -513,7 +543,14 @@ impl SimpleComponent for TerminalModel {
             let Some(anchor) = anchor_du.get() else {
                 return;
             };
-            let cursor = px_to_cell(&parser_du, cell_w, cell_h, sx + ox, sy + oy);
+            let cursor = px_to_cell(
+                &parser_du,
+                origin_du.get(),
+                cell_w,
+                cell_h,
+                sx + ox,
+                sy + oy,
+            );
             sel_du.set(Some((anchor, cursor)));
             area_du.queue_draw();
         });
@@ -521,6 +558,7 @@ impl SimpleComponent for TerminalModel {
         let parser_de = parser.clone();
         let fwd_de = mouse_fwd.clone();
         let sender_de = sender.clone();
+        let origin_de = origin.clone();
         drag.connect_drag_end(move |g, ox, oy| {
             if fwd_de.get().is_none() {
                 return;
@@ -531,7 +569,14 @@ impl SimpleComponent for TerminalModel {
             };
             let mode = parser_de.borrow().screen().mouse_protocol_mode();
             if mode != vt100::MouseProtocolMode::None && mode != vt100::MouseProtocolMode::Press {
-                let cell = px_to_cell(&parser_de, cell_w, cell_h, sx + ox, sy + oy);
+                let cell = px_to_cell(
+                    &parser_de,
+                    origin_de.get(),
+                    cell_w,
+                    cell_h,
+                    sx + ox,
+                    sy + oy,
+                );
                 mouse_report(&parser_de, &sender_de, 0, cell, false, false);
             }
         });
@@ -547,6 +592,7 @@ impl SimpleComponent for TerminalModel {
         let parser_sc = parser.clone();
         let sender_sc = sender.clone();
         let pos_sc = pointer_pos.clone();
+        let origin_sc = origin.clone();
         let wheel_acc = Rc::new(Cell::new(0.0f64));
         scroll_ctl.connect_scroll(move |_, _dx, dy| {
             if parser_sc.borrow().screen().mouse_protocol_mode() == vt100::MouseProtocolMode::None {
@@ -556,7 +602,7 @@ impl SimpleComponent for TerminalModel {
             let steps = total.trunc();
             wheel_acc.set(total - steps);
             let (x, y) = pos_sc.get();
-            let cell = px_to_cell(&parser_sc, cell_w, cell_h, x, y);
+            let cell = px_to_cell(&parser_sc, origin_sc.get(), cell_w, cell_h, x, y);
             for _ in 0..steps.abs() as i32 {
                 let button = if steps < 0.0 { 64 } else { 65 };
                 mouse_report(&parser_sc, &sender_sc, button, cell, true, false);
@@ -654,14 +700,15 @@ fn mouse_report(
 
 fn px_to_cell(
     parser: &Rc<RefCell<vt100::Parser>>,
+    origin: (f64, f64),
     cell_w: f64,
     cell_h: f64,
     x: f64,
     y: f64,
 ) -> CellPos {
     let (rows, cols) = parser.borrow().screen().size();
-    let col = ((x / cell_w).max(0.0) as u16).min(cols.saturating_sub(1));
-    let row = ((y / cell_h).max(0.0) as u16).min(rows.saturating_sub(1));
+    let col = (((x - origin.0) / cell_w).max(0.0) as u16).min(cols.saturating_sub(1));
+    let row = (((y - origin.1) / cell_h).max(0.0) as u16).min(rows.saturating_sub(1));
     (row, col)
 }
 

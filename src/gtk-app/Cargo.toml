@@ -1,6 +1,6 @@
 [package]
 name = "nodeinnet-gtk"
-version = "0.5.513"
+version = "0.6.540"
 edition = "2021"
 description = "node.in.net client for the desktop and Android: a GTK4/libadwaita peer-to-peer node."
 license = "MIT OR Apache-2.0"
@@ -65,7 +65,7 @@ glib-build-tools = "0.20"
 name = "NodeInNet"
 identifier = "com.nodeinnet.gtkapp"
 icon = ["assets/icon-512.png"]
-version = "0.5.513"
+version = "0.6.540"
 copyright = "Copyright © 2020–2026 Igor Savchenko"
 category = "Utility"
 short_description = "Your node in network"

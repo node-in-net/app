@@ -19,108 +19,6 @@ fn load_proxied_apps(config: &client_config::AppConfig) -> Vec<ProxiedApp> {
     Vec::new()
 }
 
-fn refusal_text(code: &str) -> String {
-    let key = match code {
-        "not_supported" => "net.remote_not_supported",
-        "network_off" => "net.remote_network_off",
-        "no_consent" => "net.remote_no_consent",
-        "unknown_app" => "net.remote_unknown_app",
-        "too_many" => "net.remote_too_many",
-        _ => "net.remote_unknown_reason",
-    };
-    crate::i18n::tr(key)
-}
-
-fn rebuild_remote_list(
-    model: &NetworkModel,
-    widgets: &mut NetworkWidgets,
-    sender: &ComponentSender<NetworkModel>,
-) {
-    while let Some(row) = widgets.remote_list.row_at_index(0) {
-        widgets.remote_list.remove(&row);
-    }
-
-    if !model.has_peer || !model.connected {
-        widgets
-            .remote_problem
-            .set_description(Some(&crate::i18n::tr("net.remote_no_peer")));
-        widgets.remote_stack.set_visible_child_name("problem");
-        return;
-    }
-    let Some(view) = &model.remote else {
-        widgets.remote_stack.set_visible_child_name("asking");
-        return;
-    };
-    if let Some(code) = &view.refused {
-        widgets
-            .remote_problem
-            .set_description(Some(&refusal_text(code)));
-        widgets.remote_stack.set_visible_child_name("problem");
-        return;
-    }
-    if view.apps.is_empty() {
-        widgets.remote_stack.set_visible_child_name("empty");
-        return;
-    }
-
-    for app in &view.apps {
-        let row = adw::ActionRow::builder().title(&app.name).build();
-        let icon = match app.icon_name.as_deref() {
-            Some(name) => gtk::Image::from_icon_name(name),
-            None => gtk::Image::from_resource("/com/net-ui/gtk/vpn.svg"),
-        };
-        icon.set_pixel_size(32);
-        row.add_prefix(&icon);
-
-        match view
-            .sessions
-            .iter()
-            .find(|s| s.app_id == app.id)
-            .map(|s| s.session_id)
-        {
-            Some(session_id) => {
-                let btn = gtk::Button::builder()
-                    .label(&*crate::i18n::tr("net.stop_btn"))
-                    .css_classes(vec!["destructive-action"])
-                    .valign(gtk::Align::Center)
-                    .build();
-                btn.set_cursor_from_name(Some("pointer"));
-                let sender = sender.clone();
-                btn.connect_clicked(move |_| {
-                    let _ = sender.output(NetworkOutput::StopThere(session_id));
-                });
-                row.add_suffix(&btn);
-            }
-            None => {
-                let btn = gtk::Button::builder()
-                    .label(&*crate::i18n::tr("net.launch_btn"))
-                    .css_classes(vec!["suggested-action"])
-                    .valign(gtk::Align::Center)
-                    .build();
-                btn.set_cursor_from_name(Some("pointer"));
-                let sender = sender.clone();
-                let id = app.id.clone();
-                btn.connect_clicked(move |_| {
-                    let _ = sender.output(NetworkOutput::LaunchThere(id.clone()));
-                });
-                row.add_suffix(&btn);
-            }
-        }
-        widgets.remote_list.append(&row);
-    }
-    widgets.remote_stack.set_visible_child_name("list");
-}
-
-fn column_heading(text: &str) -> gtk::Label {
-    let l = gtk::Label::builder()
-        .label(text)
-        .halign(gtk::Align::Start)
-        .css_classes(vec!["heading", "dim-label"])
-        .build();
-    l.set_margin_start(4);
-    l
-}
-
 pub fn format_size(size: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -155,16 +53,11 @@ pub enum NetworkInput {
         tx: u64,
     },
     ReloadApps,
-    RemoteApps(Option<app_core::remote_apps::RemoteAppsView>),
 }
 
 #[derive(Debug)]
 pub enum NetworkOutput {
     Launch(String),
-    RefreshRemoteApps,
-    LaunchThere(String),
-    StopThere(uuid::Uuid),
-    AllowRemoteLaunch { id: String, allowed: bool },
     Back,
 }
 
@@ -174,8 +67,6 @@ pub struct NetworkModel {
     peer_name: String,
     has_peer: bool,
     connected: bool,
-    remote: Option<app_core::remote_apps::RemoteAppsView>,
-    remote_generation: u64,
     sockets: usize,
     rx: u64,
     tx: u64,
@@ -191,10 +82,9 @@ pub struct NetworkWidgets {
     stack: gtk::Stack,
     add_btn_toolbar: gtk::Button,
     rendered_generation: u64,
-    remote_stack: gtk::Stack,
-    remote_list: gtk::ListBox,
-    remote_problem: adw::StatusPage,
-    rendered_remote_generation: u64,
+    title: gtk::Label,
+    hint: gtk::Label,
+    launch_btns: Vec<gtk::Button>,
 }
 
 impl SimpleComponent for NetworkModel {
@@ -216,11 +106,11 @@ impl SimpleComponent for NetworkModel {
         crate::init_resources();
         let config = init.config;
 
-        let content_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        content_box.set_margin_top(32);
-        content_box.set_margin_bottom(32);
-        content_box.set_margin_start(32);
-        content_box.set_margin_end(32);
+        let content_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        content_box.set_margin_top(24);
+        content_box.set_margin_bottom(24);
+        content_box.set_margin_start(24);
+        content_box.set_margin_end(24);
         content_box.set_vexpand(true);
 
         let empty_title = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -290,6 +180,7 @@ impl SimpleComponent for NetworkModel {
         let apps_list = gtk::ListBox::builder()
             .css_classes(vec!["boxed-list"])
             .selection_mode(gtk::SelectionMode::None)
+            .valign(gtk::Align::Start)
             .build();
 
         let scrolled = gtk::ScrolledWindow::builder()
@@ -355,77 +246,29 @@ impl SimpleComponent for NetworkModel {
             });
         }
 
-        let remote_list = gtk::ListBox::new();
-        remote_list.add_css_class("boxed-list");
-        remote_list.set_selection_mode(gtk::SelectionMode::None);
-        let remote_scrolled = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .min_content_height(400)
-            .vexpand(true)
-            .child(&remote_list)
+        let title = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .xalign(0.0)
+            .css_classes(vec!["title-4"])
             .build();
-
-        let asking = adw::StatusPage::builder()
-            .title(&*crate::i18n::tr("net.remote_asking"))
-            .vexpand(true)
+        let hint = gtk::Label::builder()
+            .halign(gtk::Align::Start)
+            .wrap(true)
+            .xalign(0.0)
+            .margin_bottom(12)
+            .css_classes(vec!["dim-label"])
             .build();
-        asking.set_child(Some(&gtk::Spinner::builder().spinning(true).build()));
-
-        let remote_empty = adw::StatusPage::builder()
-            .title(&*crate::i18n::tr("net.remote_empty_title"))
-            .description(&*crate::i18n::tr("net.remote_empty_desc"))
-            .icon_name("application-x-executable-symbolic")
-            .vexpand(true)
-            .build();
-
-        let remote_problem = adw::StatusPage::builder()
-            .title(&*crate::i18n::tr("net.remote_problem_title"))
-            .icon_name("dialog-information-symbolic")
-            .vexpand(true)
-            .build();
-
-        let remote_stack = gtk::Stack::builder()
-            .transition_type(gtk::StackTransitionType::Crossfade)
-            .vexpand(true)
-            .build();
-        remote_stack.add_named(&asking, Some("asking"));
-        remote_stack.add_named(&remote_scrolled, Some("list"));
-        remote_stack.add_named(&remote_empty, Some("empty"));
-        remote_stack.add_named(&remote_problem, Some("problem"));
-
-        let left = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        left.set_width_request(320);
-        left.append(&column_heading(&crate::i18n::tr("net.column_local")));
-        left.append(&stack);
-
-        let right = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        right.set_width_request(320);
-        right.append(&column_heading(&crate::i18n::tr("net.column_remote")));
-        right.append(&remote_stack);
-
-        let split = gtk::Paned::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .start_child(&left)
-            .end_child(&right)
-            .resize_start_child(true)
-            .resize_end_child(true)
-            .shrink_start_child(false)
-            .shrink_end_child(false)
-            .vexpand(true)
-            .build();
-        {
-            let split_for_map = split.clone();
-            split.connect_map(move |_| {
-                let w = split_for_map.allocated_width();
-                if w > 0 && split_for_map.position() == 0 {
-                    split_for_map.set_position(w / 2);
-                }
-            });
-        }
-
-        content_box.append(&split);
-        root.append(&content_box);
+        content_box.append(&title);
+        content_box.append(&hint);
+        content_box.append(&stack);
+        root.append(
+            &adw::Clamp::builder()
+                .maximum_size(720)
+                .vexpand(true)
+                .child(&content_box)
+                .build(),
+        );
 
         let model = NetworkModel {
             show_toolbar: init.show_toolbar,
@@ -434,8 +277,6 @@ impl SimpleComponent for NetworkModel {
             peer_name: String::new(),
             has_peer: false,
             connected: false,
-            remote: None,
-            remote_generation: 1,
             sockets: 0,
             rx: 0,
             tx: 0,
@@ -449,10 +290,9 @@ impl SimpleComponent for NetworkModel {
             stack,
             add_btn_toolbar,
             rendered_generation: 0,
-            remote_stack,
-            remote_list,
-            remote_problem,
-            rendered_remote_generation: 0,
+            title,
+            hint,
+            launch_btns: Vec::new(),
         };
         ComponentParts { model, widgets }
     }
@@ -464,22 +304,9 @@ impl SimpleComponent for NetworkModel {
                 has_peer,
                 connected,
             } => {
-                if self.peer_name != peer_name {
-                    self.remote = None;
-                }
                 self.peer_name = peer_name;
                 self.has_peer = has_peer;
                 self.connected = connected;
-                self.remote_generation += 1;
-                if has_peer && connected && self.remote.is_none() {
-                    let _ = _sender.output(NetworkOutput::RefreshRemoteApps);
-                }
-            }
-            NetworkInput::RemoteApps(view) => {
-                if self.remote != view {
-                    self.remote = view;
-                    self.remote_generation += 1;
-                }
             }
             NetworkInput::Totals { sockets, rx, tx } => {
                 self.sockets = sockets;
@@ -508,13 +335,22 @@ impl SimpleComponent for NetworkModel {
             ],
         ));
 
+        widgets.title.set_text(&crate::i18n::trf(
+            "net.apps_title",
+            &[("peer", &self.peer_name)],
+        ));
+        widgets.hint.set_text(&crate::i18n::trf(
+            "net.launch_hint",
+            &[("peer", &self.peer_name)],
+        ));
+
         if widgets.rendered_generation != self.apps_generation {
             widgets.rendered_generation = self.apps_generation;
             rebuild_apps_list(self, widgets, &sender);
         }
-        if widgets.rendered_remote_generation != self.remote_generation {
-            widgets.rendered_remote_generation = self.remote_generation;
-            rebuild_remote_list(self, widgets, &sender);
+        let reachable = self.has_peer && self.connected;
+        for btn in &widgets.launch_btns {
+            btn.set_sensitive(reachable);
         }
     }
 }
@@ -528,6 +364,7 @@ fn rebuild_apps_list(
     while let Some(child) = lst.first_child() {
         lst.remove(&child);
     }
+    widgets.launch_btns.clear();
 
     if model.apps.is_empty() {
         widgets.stack.set_visible_child_name("empty");
@@ -558,33 +395,17 @@ fn rebuild_apps_list(
             .label(&*crate::i18n::tr("net.launch_btn"))
             .css_classes(vec!["suggested-action"])
             .valign(gtk::Align::Center)
-            .margin_start(12)
+            .sensitive(model.has_peer && model.connected)
             .build();
         launch_btn.set_cursor_from_name(Some("pointer"));
-        row.add_prefix(&launch_btn);
-
-        let remote_switch = gtk::Switch::builder()
-            .valign(gtk::Align::Center)
-            .active(app.allow_remote_launch)
-            .tooltip_text(&*crate::i18n::tr("net.allow_remote_launch_tooltip"))
-            .build();
-        remote_switch.set_cursor_from_name(Some("pointer"));
-        {
-            let sender_sw = sender.clone();
-            let id = app.id.clone();
-            remote_switch.connect_active_notify(move |sw| {
-                let _ = sender_sw.output(NetworkOutput::AllowRemoteLaunch {
-                    id: id.clone(),
-                    allowed: sw.is_active(),
-                });
-            });
-        }
-        row.add_suffix(&remote_switch);
+        row.add_suffix(&launch_btn);
+        widgets.launch_btns.push(launch_btn.clone());
 
         let remove_btn = gtk::Button::builder()
             .icon_name("user-trash-symbolic")
-            .css_classes(vec!["destructive-action"])
+            .css_classes(vec!["flat"])
             .valign(gtk::Align::Center)
+            .tooltip_text(&*crate::i18n::tr("net.remove_btn_confirm"))
             .build();
         remove_btn.set_cursor_from_name(Some("pointer"));
         row.add_suffix(&remove_btn);

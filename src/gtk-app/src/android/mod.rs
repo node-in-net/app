@@ -70,6 +70,10 @@ impl Platform for Android {
     fn launcher_packages(&self, window: &gtk::Window) -> Vec<String> {
         jni_glue::launcher_packages(window)
     }
+
+    fn app_icon(&self, window: &gtk::Window, package: &str, size: i32) -> Option<Vec<u8>> {
+        jni_glue::app_icon(window, package, size)
+    }
 }
 
 #[no_mangle]

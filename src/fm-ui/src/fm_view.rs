@@ -669,7 +669,10 @@ impl SimpleComponent for FmPanelModel {
         // page's action bar; four more buttons would not fit a phone's width.
         let with_edit_buttons = with_default_toolbar && !gtk_dialogs::touch();
 
-        let stack = gtk::Stack::builder().vexpand(true).build();
+        let stack = gtk::Stack::builder()
+            .vexpand(true)
+            .hhomogeneous(!gtk_dialogs::touch())
+            .build();
 
         let loading_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -715,7 +718,11 @@ impl SimpleComponent for FmPanelModel {
             .margin_start(24)
             .margin_end(24)
             .build();
-        let error_title = gtk::Label::new(None);
+        let error_title = gtk::Label::builder()
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .justify(gtk::Justification::Center)
+            .build();
         error_title.set_markup(&format!(
             "<span size='large' weight='bold'>{}</span>",
             crate::i18n::tr("fm.load_failed")
@@ -724,12 +731,17 @@ impl SimpleComponent for FmPanelModel {
         let error_label = gtk::Label::builder()
             .justify(gtk::Justification::Center)
             .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
             .max_width_chars(48)
             .css_classes(vec!["dim-label"])
             .build();
         error_box.append(&error_label);
         let error_btns = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
+            .orientation(if gtk_dialogs::touch() {
+                gtk::Orientation::Vertical
+            } else {
+                gtk::Orientation::Horizontal
+            })
             .halign(gtk::Align::Center)
             .spacing(8)
             .build();
@@ -772,6 +784,18 @@ impl SimpleComponent for FmPanelModel {
             .build();
         breadcrumbs_scroller.add_css_class("address-pill");
         breadcrumbs_scroller.set_hexpand(true);
+        {
+            // Deferred: GtkViewport notifies these from inside its allocation, which drops a set_value.
+            let to_end = |adj: &gtk::Adjustment| {
+                let adj = adj.clone();
+                gtk::glib::idle_add_local_once(move || {
+                    adj.set_value(adj.upper() - adj.page_size())
+                });
+            };
+            let adj = breadcrumbs_scroller.hadjustment();
+            adj.connect_upper_notify(to_end);
+            adj.connect_page_size_notify(to_end);
+        }
         {
             let scroll_ctrl =
                 gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
@@ -1317,6 +1341,8 @@ impl SimpleComponent for FmPanelModel {
 
         let status_label = gtk::Label::builder()
             .halign(gtk::Align::Start)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .margin_start(8)
             .margin_end(8)
             .margin_top(4)
@@ -1328,6 +1354,7 @@ impl SimpleComponent for FmPanelModel {
             .margin_start(8)
             .margin_top(4)
             .margin_bottom(4)
+            .visible(!gtk_dialogs::touch())
             .build();
         source_label.add_css_class("dim-label");
         let status_bar = gtk::Box::builder()
