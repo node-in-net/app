@@ -66,7 +66,7 @@ nodeinnet-api = { path = "submodules/p2p-common/nodeinnet-api" }
 nodeinnet-p2p = { path = "submodules/p2p-common/nodeinnet-p2p" }
 client-config = { path = "src/client-config" }
 p2p-node = { path = "submodules/p2p-common/p2p-node", default-features = false }
-node-functions = { path = "submodules/p2p-functions/node-functions", default-features = false }
+node-functions = { path = "submodules/p2p-functions/node-functions", default-features = false, features = ["all"] }
 p2p-handlers = { path = "submodules/p2p-functions/p2p-handlers", default-features = false }
 node-network = { path = "src/node-network" }
 
@@ -94,3 +94,8 @@ gtk-dialogs = { path = "src/dialogs" }
 app-version = { path = "src/app-version" }
 node-auth = { path = "src/node-auth", default-features = false }
 web-davserver = { path = "submodules/p2p-functions/web-davserver" }
+
+[patch."https://github.com/node-in-net/p2p-common"]
+nodeinnet-p2p = { path = "submodules/p2p-common/nodeinnet-p2p" }
+p2p-node = { path = "submodules/p2p-common/p2p-node" }
+client-core = { path = "submodules/p2p-common/client-core" }
