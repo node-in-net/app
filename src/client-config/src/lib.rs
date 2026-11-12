@@ -4,7 +4,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub const SCREENCAST_TOKEN_KEY: &str = "rtc.screencast_restore_token";
@@ -19,6 +19,7 @@ pub struct ConfigManager {
 
 impl ConfigManager {
     fn new(app_name: &str) -> Self {
+        restrict_to_owner(&Self::legacy_config_path(app_name));
         let config_path = Self::get_config_path(app_name);
         match Self::load_from_disk(&config_path) {
             Some(store) => Self { store, config_path },
@@ -56,6 +57,7 @@ impl ConfigManager {
 
     fn load_from_disk(path: &PathBuf) -> Option<HashMap<String, Value>> {
         if let Ok(content) = fs::read_to_string(path) {
+            restrict_to_owner(path);
             if let Ok(store) = serde_json::from_str(&content) {
                 return Some(store);
             }
@@ -66,12 +68,43 @@ impl ConfigManager {
     fn save_to_disk(&self) {
         if let Ok(content) = serde_json::to_string_pretty(&self.store) {
             let temp_path = self.config_path.with_extension("tmp");
-            if fs::write(&temp_path, content).is_ok() {
+            if write_private(&temp_path, content.as_bytes()).is_ok() {
                 let _ = fs::rename(temp_path, &self.config_path);
             }
         }
     }
 }
+
+#[cfg(unix)]
+fn write_private(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let _ = fs::remove_file(path);
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?
+        .write_all(content)
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    fs::write(path, content)
+}
+
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.permissions().mode() & 0o077 != 0 {
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &Path) {}
 
 #[derive(Clone)]
 pub struct AppConfig {
@@ -205,6 +238,52 @@ mod tests {
             "path: {}",
             path.display()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_config_file_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &PathBuf| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let app = "_client_config_unit_tests_private";
+        let flat = ConfigManager::get_config_path(app);
+        let _ = fs::remove_file(&flat);
+        let stale = flat.with_extension("tmp");
+        fs::write(&stale, "{}").unwrap();
+        fs::set_permissions(&stale, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let cfg = AppConfig::new(app);
+        cfg.set("app.private_key_b64", "secret".to_string());
+        cfg.save();
+        assert_eq!(mode(&flat) & 0o077, 0, "a new config is readable by others");
+        assert!(!stale.exists());
+
+        fs::set_permissions(&flat, fs::Permissions::from_mode(0o644)).unwrap();
+        let cfg = AppConfig::new(app);
+        assert_eq!(
+            mode(&flat) & 0o077,
+            0,
+            "an existing config stays readable by others"
+        );
+
+        fs::set_permissions(&flat, fs::Permissions::from_mode(0o644)).unwrap();
+        cfg.set("test_key", "value".to_string());
+        cfg.save();
+        assert_eq!(mode(&flat) & 0o077, 0, "a rewrite kept the old mode");
+
+        let legacy = ConfigManager::legacy_config_path(app);
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, r#"{ "app.private_key_b64": "older" }"#).unwrap();
+        fs::set_permissions(&legacy, fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = AppConfig::new(app);
+        assert_eq!(
+            mode(&legacy) & 0o077,
+            0,
+            "a legacy backup stays readable by others"
+        );
+
+        let _ = fs::remove_file(&flat);
+        let _ = fs::remove_dir_all(legacy.parent().unwrap());
     }
 
     #[test]
