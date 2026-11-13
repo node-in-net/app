@@ -454,9 +454,7 @@ pub async fn start_application(args: crate::cli::Args) {
         my_info.clone(),
         priv_key_str,
         std::sync::Arc::new(client_config::ConfigPeerStore::new(config.clone())),
-        config
-            .get::<bool>(client_config::LOCAL_DISCOVERY_KEY)
-            .unwrap_or(false),
+        None,
     );
 
     net_tx

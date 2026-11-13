@@ -99,6 +99,10 @@ pub enum ApiCmd {
         side: Side,
         path: String,
     },
+    FmNavigateTyped {
+        side: Side,
+        path: String,
+    },
     FmEnter {
         side: Side,
     },
@@ -518,6 +522,9 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
         }
         FmNavigate { side, path } => {
             app.fm.navigate(side, &path).await;
+        }
+        FmNavigateTyped { side, path } => {
+            app.fm.navigate_typed(side, &path).await;
         }
         FmEnter { side } => {
             app.fm.enter(side).await;

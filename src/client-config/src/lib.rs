@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 pub const SCREENCAST_TOKEN_KEY: &str = "rtc.screencast_restore_token";
 pub const TURN_REGION_KEY: &str = "turn_region";
 pub const PEERS_KEY: &str = "peers";
-pub const LOCAL_DISCOVERY_KEY: &str = "app.enable_local_discovery";
 
 pub struct ConfigManager {
     store: HashMap<String, Value>,

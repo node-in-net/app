@@ -13,6 +13,7 @@ common = { workspace = true }
 async-trait = "0.1"
 tokio = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
+node-functions = { path = "../../submodules/p2p-functions/node-functions", default-features = false }
 
 [dev-dependencies]
 serde_json = { workspace = true }

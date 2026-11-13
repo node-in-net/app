@@ -1,5 +1,7 @@
 use fm_core::rpc::{FileSystemRpc, RemoteFileEntry};
+use node_functions::names::{folded, Comparison};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -150,8 +152,18 @@ fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-fn free_name(name: &str, taken: &[String]) -> String {
-    if !taken.iter().any(|t| t == name) {
+fn comparison_on(provider: &Rc<dyn FileSystemRpc>) -> Comparison {
+    if provider.is_local() {
+        crate::local_fs::LOCAL_COMPARISON
+    } else {
+        Comparison::Exact
+    }
+}
+
+fn free_name(name: &str, taken: &[String], by: Comparison) -> String {
+    let taken: Vec<_> = taken.iter().map(|t| folded(t, by)).collect();
+    let free = |candidate: &str| !taken.contains(&folded(candidate, by));
+    if free(name) {
         return name.to_string();
     }
     let (stem, ext) = match name.rfind('.') {
@@ -160,7 +172,7 @@ fn free_name(name: &str, taken: &[String]) -> String {
     };
     (2..)
         .map(|n| format!("{stem} ({n}){ext}"))
-        .find(|c| !taken.iter().any(|t| t == c))
+        .find(|c| free(c))
         .unwrap_or_else(|| name.to_string())
 }
 
@@ -197,6 +209,15 @@ async fn copy_entry(
     dst_name: &str,
     is_dir: bool,
 ) -> Result<(), common::AppError> {
+    let joinable = |name: &str| {
+        if dst_provider.is_local() && !crate::local_fs::is_plain_name(name) {
+            return Err(common::AppError::Other(format!(
+                "invalid file name: {name}"
+            )));
+        }
+        Ok(())
+    };
+    joinable(dst_name)?;
     if !is_dir {
         let bytes = src_provider.read_file(src_path.to_string(), None).await?;
         return dst_provider
@@ -204,6 +225,8 @@ async fn copy_entry(
             .await;
     }
 
+    let by = comparison_on(dst_provider);
+    let mut refused = Vec::new();
     let mut queue = vec![(
         src_path.to_string(),
         dst_parent.to_string(),
@@ -212,7 +235,20 @@ async fn copy_entry(
     while let Some((from, to_parent, dir_name)) = queue.pop() {
         ensure_dir(dst_provider, &to_parent, &dir_name).await?;
         let here = join(&to_parent, &dir_name);
+        let mut written = HashMap::new();
         for entry in src_provider.list_dir(from.clone()).await? {
+            joinable(&entry.name)?;
+            let first = written
+                .entry(folded(&entry.name, by).into_owned())
+                .or_insert_with(|| entry.name.clone());
+            if *first != entry.name {
+                refused.push(format!(
+                    "\"{}\" already exists here as \"{}\"",
+                    join(&here, &entry.name),
+                    join(&here, first)
+                ));
+                continue;
+            }
             let child = join(&from, &entry.name);
             if entry.is_dir {
                 queue.push((child, here.clone(), entry.name.clone()));
@@ -224,7 +260,11 @@ async fn copy_entry(
             }
         }
     }
-    Ok(())
+    if refused.is_empty() {
+        Ok(())
+    } else {
+        Err(common::AppError::Other(refused.join("; ")))
+    }
 }
 
 impl FileManager {
@@ -372,6 +412,39 @@ impl FileManager {
             let p = self.panel_mut(side);
             p.back.push(old_cwd);
             p.forward.clear();
+        }
+        self.emit(side);
+        ok
+    }
+
+    pub async fn navigate_typed(&mut self, side: Side, typed: &str) -> bool {
+        let local = self.provider(side).is_some_and(|p| p.is_local());
+        match crate::local_fs::typed_root(typed) {
+            Some((root, path)) if local => self.reroot(side, root, &path).await,
+            _ => self.navigate(side, typed).await,
+        }
+    }
+
+    async fn reroot(&mut self, side: Side, root: std::path::PathBuf, path: &str) -> bool {
+        let Some(index) = self.panel_ref(side).state.active_resource else {
+            return false;
+        };
+        let provider: Rc<dyn FileSystemRpc> = Rc::new(crate::local_fs::LocalFsRpc::new(root));
+        let previous = std::mem::replace(&mut self.panel_mut(side).providers[index], provider);
+        let ok = self.set_dir(side, path, false).await;
+        let p = self.panel_mut(side);
+        if ok {
+            p.back.clear();
+            p.forward.clear();
+            if self
+                .clipboard
+                .as_ref()
+                .is_some_and(|c| c.kind == TransferKind::Move && Rc::ptr_eq(&c.provider, &previous))
+            {
+                self.clear_clipboard();
+            }
+        } else {
+            p.providers[index] = previous;
         }
         self.emit(side);
         ok
@@ -685,14 +758,15 @@ impl FileManager {
             plan.error = Some("both panes need a resource".into());
             return plan;
         };
-        if let Ok(existing) = dst_provider.list_dir(to).await {
-            let taken: Vec<&str> = existing.iter().map(|e| e.name.as_str()).collect();
-            plan.conflicts = plan
-                .items
-                .iter()
-                .filter(|i| taken.contains(&i.name.as_str()))
-                .map(|i| i.name.clone())
-                .collect();
+        let by = comparison_on(&dst_provider);
+        let existing = dst_provider.list_dir(to).await.unwrap_or_default();
+        let mut taken: Vec<_> = existing.iter().map(|e| folded(&e.name, by)).collect();
+        for item in &plan.items {
+            let name = folded(&item.name, by);
+            if taken.contains(&name) {
+                plan.conflicts.push(item.name.clone());
+            }
+            taken.push(name);
         }
         plan
     }
@@ -729,6 +803,7 @@ impl FileManager {
             .await
             .map(|e| e.into_iter().map(|e| e.name).collect())
             .unwrap_or_default();
+        let by = comparison_on(&dst_provider);
 
         let same_provider = Rc::ptr_eq(&src.provider, &dst_provider);
         let moving = src.kind == TransferKind::Move;
@@ -743,7 +818,7 @@ impl FileManager {
                 .map(|(_, r)| *r)
             {
                 Some(OnConflict::Skip) => continue,
-                Some(OnConflict::KeepBoth) => free_name(&item.name, &taken),
+                Some(OnConflict::KeepBoth) => free_name(&item.name, &taken, by),
                 Some(OnConflict::Replace) | None => item.name.clone(),
             };
             if same_provider && src_path == join(&dst_dir, &dst_name) {
@@ -1722,12 +1797,16 @@ mod tests {
 
     #[test]
     fn free_name_walks_past_what_is_taken() {
+        let exact = Comparison::Exact;
         let taken = vec!["report.pdf".to_string(), "report (2).pdf".to_string()];
-        assert_eq!(free_name("report.pdf", &taken), "report (3).pdf");
-        assert_eq!(free_name("fresh.pdf", &taken), "fresh.pdf");
-        assert_eq!(free_name("noext", &["noext".to_string()]), "noext (2)");
+        assert_eq!(free_name("report.pdf", &taken, exact), "report (3).pdf");
+        assert_eq!(free_name("fresh.pdf", &taken, exact), "fresh.pdf");
         assert_eq!(
-            free_name(".hidden", &[".hidden".to_string()]),
+            free_name("noext", &["noext".to_string()], exact),
+            "noext (2)"
+        );
+        assert_eq!(
+            free_name(".hidden", &[".hidden".to_string()], exact),
             ".hidden (2)"
         );
     }
@@ -1946,6 +2025,354 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("both panes"));
+    }
+
+    async fn a_local_pane_beside_a_peer_holding(
+        names: &[&str],
+        local: &std::path::Path,
+    ) -> (FileManager, Rc<FakeFs>) {
+        let (mut fm, src) = fm_ready().await;
+        src.dirs.borrow_mut().insert(
+            "/".into(),
+            names.iter().map(|name| fentry(name, false, 3)).collect(),
+        );
+        for name in names {
+            src.files
+                .borrow_mut()
+                .insert(join("/", name), b"abc".to_vec());
+        }
+        fm.set_resources(
+            Side::Left,
+            vec![(
+                tab("local"),
+                Rc::new(crate::local_fs::LocalFsRpc::new(local)) as Rc<dyn FileSystemRpc>,
+            )],
+        );
+        assert!(fm.select_resource(Side::Left, 0).await);
+        assert!(fm.navigate(Side::Right, "/").await);
+        for index in 0..names.len() {
+            fm.toggle_select(Side::Right, index);
+        }
+        (fm, src)
+    }
+
+    #[tokio::test]
+    async fn a_peer_name_this_system_would_split_never_reaches_the_disk() {
+        let local = std::env::temp_dir().join(format!("fm-split-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&local);
+        std::fs::create_dir_all(local.join("docs")).unwrap();
+        let (mut fm, src) = a_local_pane_beside_a_peer_holding(&["docs/x", "ok.txt"], &local).await;
+
+        assert!(!fm.move_to(Side::Left).await);
+        assert!(!local.join("docs/x").exists());
+        assert!(
+            src.files.borrow().contains_key("/docs/x"),
+            "a refused file stays where it was"
+        );
+        assert_eq!(std::fs::read(local.join("ok.txt")).unwrap(), b"abc");
+        assert!(!src.files.borrow().contains_key("/ok.txt"));
+        let _ = std::fs::remove_dir_all(&local);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_peer_name_with_a_drive_or_a_root_never_reaches_the_disk() {
+        let local = std::env::temp_dir().join(format!("fm-split-windows-{}", std::process::id()));
+        for name in ["C:\\x", "C:x", "\\x", "..\\x", "docs\\x"] {
+            let _ = std::fs::remove_dir_all(&local);
+            std::fs::create_dir_all(local.join("docs")).unwrap();
+            let (mut fm, _src) = a_local_pane_beside_a_peer_holding(&[name], &local).await;
+
+            assert!(!fm.copy_to(Side::Left).await, "{name} was taken");
+            assert!(
+                fm.panel(Side::Left)
+                    .last_error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("invalid file name"),
+                "{name} was not refused by its name"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&local);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_peer_name_windows_would_rewrite_never_reaches_the_disk() {
+        let local = std::env::temp_dir().join(format!("fm-rewrite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&local);
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("notes"), b"keep").unwrap();
+        std::fs::write(local.join("12"), b"keep").unwrap();
+        let peer_names = ["notes.", "notes ", "12:30.log", "nul.txt", "com1", "a?b"];
+        let (mut fm, src) = a_local_pane_beside_a_peer_holding(&peer_names, &local).await;
+
+        assert!(!fm.move_to(Side::Left).await);
+        assert_eq!(std::fs::read(local.join("notes")).unwrap(), b"keep");
+        assert_eq!(std::fs::read(local.join("12")).unwrap(), b"keep");
+        for name in peer_names {
+            assert!(
+                src.files.borrow().contains_key(&join("/", name)),
+                "{name} left the peer"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&local);
+    }
+
+    #[cfg(any(windows, target_os = "macos", target_os = "android"))]
+    #[tokio::test]
+    async fn names_the_local_disk_takes_as_one_are_asked_about() {
+        let local = std::env::temp_dir().join(format!("fm-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&local);
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("notes.txt"), b"keep").unwrap();
+        std::fs::write(local.join("NOTES (2).txt"), b"keep").unwrap();
+        let peer_names = ["Notes.txt", "README.txt", "readme.txt"];
+        let (mut fm, src) = a_local_pane_beside_a_peer_holding(&peer_names, &local).await;
+        let moving = TransferFrom::OtherPane(TransferKind::Move);
+
+        let plan = fm.plan_transfer(Side::Left, moving, None).await;
+        assert_eq!(plan.conflicts, ["Notes.txt", "readme.txt"]);
+        let answers = vec![
+            ("Notes.txt".to_string(), OnConflict::KeepBoth),
+            ("readme.txt".to_string(), OnConflict::Skip),
+        ];
+        assert!(fm.run_transfer(Side::Left, moving, None, answers).await);
+
+        assert_eq!(std::fs::read(local.join("notes.txt")).unwrap(), b"keep");
+        assert_eq!(std::fs::read(local.join("NOTES (2).txt")).unwrap(), b"keep");
+        assert_eq!(std::fs::read(local.join("Notes (3).txt")).unwrap(), b"abc");
+        assert_eq!(std::fs::read(local.join("README.txt")).unwrap(), b"abc");
+        assert!(
+            src.files.borrow().contains_key("/readme.txt"),
+            "a skipped item stays on the peer"
+        );
+        let _ = std::fs::remove_dir_all(&local);
+    }
+
+    #[tokio::test]
+    async fn a_peer_destination_tells_case_variants_apart() {
+        let (mut fm, _src) = fm_ready().await;
+        let dest = Rc::new(FakeFs::default());
+        dest.dirs
+            .borrow_mut()
+            .insert("/".into(), vec![fentry("README.md", false, 1)]);
+        fm.set_resources(Side::Left, vec![(tab("dest"), dest)]);
+        fm.select_resource(Side::Left, 0).await;
+
+        fm.set_cursor(Side::Right, 1);
+        let plan = fm
+            .plan_transfer(
+                Side::Left,
+                TransferFrom::OtherPane(TransferKind::Copy),
+                None,
+            )
+            .await;
+        assert_eq!(plan.items.len(), 1);
+        assert!(plan.conflicts.is_empty());
+    }
+
+    async fn a_peer_folder_holding_case_variants() -> (FileManager, Rc<FakeFs>) {
+        let (mut fm, src) = fm_ready().await;
+        src.dirs
+            .borrow_mut()
+            .insert("/".into(), vec![fentry("proj", true, 0)]);
+        src.dirs.borrow_mut().insert(
+            "/proj".into(),
+            vec![
+                fentry("Makefile", false, 5),
+                fentry("makefile", false, 6),
+                fentry("src", true, 0),
+                fentry("SRC", true, 0),
+                fentry("readme.txt", false, 4),
+            ],
+        );
+        src.dirs
+            .borrow_mut()
+            .insert("/proj/src".into(), vec![fentry("a.c", false, 1)]);
+        src.dirs
+            .borrow_mut()
+            .insert("/proj/SRC".into(), vec![fentry("b.c", false, 1)]);
+        for (path, bytes) in [
+            ("/proj/Makefile", "first"),
+            ("/proj/makefile", "second"),
+            ("/proj/readme.txt", "read"),
+            ("/proj/src/a.c", "a"),
+            ("/proj/SRC/b.c", "b"),
+        ] {
+            src.files.borrow_mut().insert(path.into(), bytes.into());
+        }
+        assert!(fm.navigate(Side::Right, "/").await);
+        (fm, src)
+    }
+
+    #[cfg(any(windows, target_os = "macos", target_os = "android"))]
+    #[tokio::test]
+    async fn names_inside_a_folder_the_local_disk_takes_as_one_are_refused() {
+        let local = std::env::temp_dir().join(format!("fm-case-inside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&local);
+        std::fs::create_dir_all(&local).unwrap();
+        let (mut fm, src) = a_peer_folder_holding_case_variants().await;
+        local_pane(&mut fm, &local);
+        assert!(fm.select_resource(Side::Left, 0).await);
+
+        assert!(!fm.move_to(Side::Left).await);
+        assert_eq!(
+            fm.panel(Side::Left).last_error.as_deref(),
+            Some(
+                "\"/proj/makefile\" already exists here as \"/proj/Makefile\"; \
+                 \"/proj/SRC\" already exists here as \"/proj/src\""
+            )
+        );
+        let listed = |dir: &str| {
+            let mut names: Vec<_> = std::fs::read_dir(local.join(dir))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(listed("proj"), ["Makefile", "readme.txt", "src"]);
+        assert_eq!(listed("proj/src"), ["a.c"]);
+        assert_eq!(
+            std::fs::read(local.join("proj/Makefile")).unwrap(),
+            b"first"
+        );
+        assert_eq!(
+            std::fs::read(local.join("proj/readme.txt")).unwrap(),
+            b"read"
+        );
+        for kept in [
+            "/proj/Makefile",
+            "/proj/makefile",
+            "/proj/readme.txt",
+            "/proj/src/a.c",
+            "/proj/SRC/b.c",
+        ] {
+            assert!(
+                src.files.borrow().contains_key(kept),
+                "{kept} left the peer"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&local);
+    }
+
+    #[tokio::test]
+    async fn a_peer_destination_takes_case_variants_inside_a_folder_as_two() {
+        let (mut fm, src) = a_peer_folder_holding_case_variants().await;
+        let dest = Rc::new(FakeFs::default());
+        dest.dirs.borrow_mut().insert("/".into(), Vec::new());
+        fm.set_resources(Side::Left, vec![(tab("dest"), dest.clone())]);
+        assert!(fm.select_resource(Side::Left, 0).await);
+
+        assert!(fm.move_to(Side::Left).await);
+        assert_eq!(
+            dest.files.borrow().get("/proj/makefile").cloned(),
+            Some(b"second".to_vec())
+        );
+        assert_eq!(
+            dest.files.borrow().get("/proj/SRC/b.c").cloned(),
+            Some(b"b".to_vec())
+        );
+        assert!(!src.dirs.borrow().contains_key("/proj"));
+    }
+
+    fn local_pane(fm: &mut FileManager, root: &std::path::Path) {
+        fm.set_resources(
+            Side::Left,
+            vec![(
+                tab("local"),
+                Rc::new(crate::local_fs::LocalFsRpc::new(root)) as Rc<dyn FileSystemRpc>,
+            )],
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_root_moves_the_local_pane_and_a_missing_one_leaves_it() {
+        let scratch = std::env::temp_dir().join(format!("fm-reroot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let (home, other) = (scratch.join("home"), scratch.join("other"));
+        std::fs::create_dir_all(home.join("docs")).unwrap();
+        std::fs::create_dir_all(other.join("data")).unwrap();
+        std::fs::write(other.join("data").join("x.txt"), b"x").unwrap();
+        let mut fm = FileManager::new();
+        local_pane(&mut fm, &home);
+        assert!(fm.select_resource(Side::Left, 0).await);
+        assert!(fm.navigate_typed(Side::Left, "/docs").await);
+
+        assert!(!fm.reroot(Side::Left, other.clone(), "/missing").await);
+        assert_eq!(fm.panel(Side::Left).cwd, "/docs");
+        assert!(fm.panel(Side::Left).can_back);
+        assert!(fm.up(Side::Left).await);
+        assert_eq!(names(&fm, Side::Left), ["docs"]);
+
+        assert!(fm.reroot(Side::Left, other.clone(), "/data").await);
+        assert_eq!(fm.panel(Side::Left).cwd, "/data");
+        assert_eq!(names(&fm, Side::Left), ["x.txt"]);
+        assert!(
+            !fm.panel(Side::Left).can_back,
+            "the old root's history is gone"
+        );
+        assert!(fm.up(Side::Left).await);
+        assert_eq!(names(&fm, Side::Left), ["data"]);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[tokio::test]
+    async fn a_new_root_drops_a_cut_taken_under_the_old_one() {
+        let scratch = std::env::temp_dir().join(format!("fm-reroot-cut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(scratch.join("a.txt"), b"keep").unwrap();
+        let mut fm = FileManager::new();
+        local_pane(&mut fm, &scratch);
+        assert!(fm.select_resource(Side::Left, 0).await);
+
+        assert!(fm.set_clipboard(Side::Left, TransferKind::Copy));
+        assert!(fm.reroot(Side::Left, scratch.clone(), "/").await);
+        assert!(
+            fm.clipboard().is_some(),
+            "a copy can still land under the new root"
+        );
+
+        assert!(fm.set_clipboard(Side::Left, TransferKind::Move));
+        assert!(fm.reroot(Side::Left, scratch.clone(), "/").await);
+        let plan = fm
+            .plan_transfer(Side::Left, TransferFrom::Clipboard, None)
+            .await;
+        let replace = plan
+            .conflicts
+            .into_iter()
+            .map(|name| (name, OnConflict::Replace))
+            .collect();
+        fm.run_transfer(Side::Left, TransferFrom::Clipboard, None, replace)
+            .await;
+        assert_eq!(std::fs::read(scratch.join("a.txt")).unwrap(), b"keep");
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_typed_path_on_another_root_moves_the_local_pane_there() {
+        let scratch = std::env::temp_dir().join(format!("fm-typed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let (home, other) = (scratch.join("home"), scratch.join("other"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(other.join("data")).unwrap();
+        std::fs::write(other.join("data").join("x.txt"), b"x").unwrap();
+        let typed = other.join("data").to_string_lossy().into_owned();
+        let mut fm = FileManager::new();
+        local_pane(&mut fm, &home);
+        assert!(fm.select_resource(Side::Left, 0).await);
+
+        assert!(!fm.navigate(Side::Left, &typed).await);
+        assert!(fm.navigate_typed(Side::Left, &typed).await);
+        assert_eq!(names(&fm, Side::Left), ["x.txt"]);
+        assert!(
+            !fm.navigate(Side::Left, &typed).await,
+            "only the address bar takes a drive"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     #[tokio::test]

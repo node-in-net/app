@@ -529,10 +529,7 @@ impl Net {
             identity.my_info.clone(),
             identity.private_key.clone(),
             std::sync::Arc::new(client_config::ConfigPeerStore::new(identity.config.clone())),
-            identity
-                .config
-                .get::<bool>(client_config::LOCAL_DISCOVERY_KEY)
-                .unwrap_or(false),
+            None,
         );
         Net {
             net_tx,

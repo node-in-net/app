@@ -932,7 +932,7 @@ fn translate(
         }),
         FmPanelOutput::NavigateLevel(k) => send(ApiCmd::FmBreadcrumb { side, index: k - 1 }),
         FmPanelOutput::Refresh => send(ApiCmd::FmRefresh { side }),
-        FmPanelOutput::NavigateTyped(path) => send(ApiCmd::FmNavigate { side, path }),
+        FmPanelOutput::NavigateTyped(path) => send(ApiCmd::FmNavigateTyped { side, path }),
         FmPanelOutput::Back => send(ApiCmd::FmUp { side }),
         FmPanelOutput::Start => send(ApiCmd::FmNavigate {
             side,
@@ -1003,8 +1003,12 @@ fn translate(
 
 #[cfg(test)]
 mod tests {
-    use super::targets;
-    use app_core::fm::{FileEntry, PanelState};
+    use super::{targets, translate, SideState};
+    use app_core::fm::{FileEntry, PanelState, Side};
+    use app_headless::ApiCmd;
+    use gtk_fm_ui::FmPanelOutput;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     fn panel(names: &[&str], cursor: usize) -> PanelState {
         PanelState {
@@ -1052,5 +1056,21 @@ mod tests {
     fn without_a_panel_cursor_the_core_still_answers() {
         let p = panel(&["a.txt", "b.txt"], 1);
         assert_eq!(targets(&p, &[], None), vec!["b.txt"]);
+    }
+
+    #[test]
+    fn an_address_typed_into_the_bar_reaches_the_typed_entry() {
+        let (cmd, mut sent) = tokio::sync::mpsc::unbounded_channel();
+        let state = Rc::new(RefCell::new(SideState::default()));
+        translate(
+            Side::Left,
+            FmPanelOutput::NavigateTyped("D:\\data".into()),
+            &cmd,
+            &state,
+        );
+        assert!(matches!(
+            sent.try_recv(),
+            Ok(ApiCmd::FmNavigateTyped { side: Side::Left, path }) if path == "D:\\data"
+        ));
     }
 }

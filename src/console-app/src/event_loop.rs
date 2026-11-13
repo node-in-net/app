@@ -90,6 +90,7 @@ pub fn run_event_loop(ctx: EventLoopContext) {
     let mut reconnect_attempt = ctx.reconnect_attempt;
     let reconnect_timeouts = ctx.reconnect_timeouts;
     let config = ctx.config;
+    let mut transfer_failed = false;
 
     loop {
         if let Ok(event) = app_rx.recv() {
@@ -439,7 +440,35 @@ pub fn run_event_loop(ctx: EventLoopContext) {
                                 for diff in computed_diffs {
                                     if diff.difference
                                         == nodeinnet_p2p::p2p::FileDifference::Identical
+                                        || diff.folder_name != target_folder
                                     {
+                                        continue;
+                                    }
+                                    if !std::path::Path::new(&diff.relative_path)
+                                        .components()
+                                        .all(|c| matches!(c, std::path::Component::Normal(_)))
+                                    {
+                                        println!(
+                                            "{} Skipping {}: it leads out of the sync folder",
+                                            "⚠️".yellow(),
+                                            diff.relative_path
+                                        );
+                                        continue;
+                                    }
+                                    if cfg!(windows)
+                                        && std::path::Path::new(&diff.relative_path)
+                                            .components()
+                                            .any(|c| {
+                                                node_functions::names::windows_refuses(
+                                                    &c.as_os_str().to_string_lossy(),
+                                                )
+                                            })
+                                    {
+                                        println!(
+                                            "{} Skipping {}: Windows cannot store this name",
+                                            "⚠️".yellow(),
+                                            diff.relative_path
+                                        );
                                         continue;
                                     }
 
@@ -929,26 +958,35 @@ pub fn run_event_loop(ctx: EventLoopContext) {
                         status,
                     } => match status {
                         nodeinnet_p2p::FileTransferStatus::Accepted { total_size } => {
-                            let mut is_upload = false;
-                            let mut upload_node = String::new();
-                            let mut upload_path = std::path::PathBuf::new();
-
-                            if let Some((local_path, node_id)) =
-                                pending_uploads.blocking_lock().remove(&transfer_id)
-                            {
-                                is_upload = true;
-                                upload_node = node_id;
-                                upload_path = local_path;
-                            }
-
-                            if is_upload {
+                            let mut downloads = active_downloads.lock().unwrap();
+                            if let Some(local_path) = downloads.get(&transfer_id) {
                                 println!(
-                                    "{} Upload Accepted! Streaming {} bytes...",
-                                    "🔼".blue(),
+                                    "{} Download Accepted! Expecting {} bytes...",
+                                    "🔽".blue(),
                                     total_size
                                 );
+                                if let Err(e) = std::fs::File::create(local_path) {
+                                    println!("{} Error creating local file: {}", "❌".red(), e);
+                                    transfer_failed = true;
+                                    downloads.remove(&transfer_id);
+                                    if downloads.is_empty() {
+                                        std::process::exit(1);
+                                    }
+                                }
+                            } else {
+                                let pending_uploads = pending_uploads.clone();
                                 let net_tx_upload = net_tx.clone();
                                 tokio::spawn(async move {
+                                    let Some((upload_path, upload_node)) =
+                                        pending_uploads.lock().await.remove(&transfer_id)
+                                    else {
+                                        return;
+                                    };
+                                    println!(
+                                        "{} Upload Accepted! Streaming {} bytes...",
+                                        "🔼".blue(),
+                                        total_size
+                                    );
                                     if let Ok(mut file) = tokio::fs::File::open(&upload_path).await
                                     {
                                         use tokio::io::AsyncReadExt;
@@ -1000,23 +1038,16 @@ pub fn run_event_loop(ctx: EventLoopContext) {
                                         std::process::exit(0);
                                     }
                                 });
-                            } else if let Some(local_path) =
-                                active_downloads.lock().unwrap().get(&transfer_id)
-                            {
-                                println!(
-                                    "{} Download Accepted! Expecting {} bytes...",
-                                    "🔽".blue(),
-                                    total_size
-                                );
-                                if let Err(e) = std::fs::File::create(local_path) {
-                                    println!("{} Error creating local file: {}", "❌".red(), e);
-                                    std::process::exit(1);
-                                }
                             }
                         }
                         nodeinnet_p2p::FileTransferStatus::Rejected { reason } => {
                             println!("{} Transfer rejected: {}", "❌".red(), reason);
-                            std::process::exit(1);
+                            transfer_failed = true;
+                            let mut downloads = active_downloads.lock().unwrap();
+                            downloads.remove(&transfer_id);
+                            if downloads.is_empty() {
+                                std::process::exit(1);
+                            }
                         }
                     },
                     P2pMessage::FileChunk {
@@ -1036,14 +1067,12 @@ pub fn run_event_loop(ctx: EventLoopContext) {
                         }
                     }
                     P2pMessage::FileTransferComplete { transfer_id, .. } => {
-                        if active_downloads
-                            .lock()
-                            .unwrap()
-                            .remove(&transfer_id)
-                            .is_some()
-                        {
+                        let mut downloads = active_downloads.lock().unwrap();
+                        if downloads.remove(&transfer_id).is_some() {
                             println!("\n{} Download Completed Successfully!", "✅".green().bold());
-                            std::process::exit(0);
+                            if downloads.is_empty() {
+                                std::process::exit(if transfer_failed { 1 } else { 0 });
+                            }
                         }
                     }
                     P2pMessage::TerminalOutput { data, .. } => {
@@ -1061,5 +1090,381 @@ pub fn run_event_loop(ctx: EventLoopContext) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(Instant::now() < deadline, "gave up waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn remote(relative_path: &str) -> nodeinnet_p2p::p2p::SyncFileInfo {
+        nodeinnet_p2p::p2p::SyncFileInfo {
+            relative_path: relative_path.to_string(),
+            md5_hash: "remote".to_string(),
+            size: 3,
+            last_modified_ms: 0,
+        }
+    }
+
+    fn scratch() -> Scratch {
+        Scratch(std::env::temp_dir().join(format!("console-app-sync-{}", uuid::Uuid::new_v4())))
+    }
+
+    fn sync_folder(name: &str, path: &std::path::Path) -> nodeinnet_p2p::SharedResource {
+        nodeinnet_p2p::SharedResource {
+            id: name.into(),
+            name: name.into(),
+            resource_type: nodeinnet_p2p::ResourceType::SyncFolder,
+            config: Some(serde_json::json!({ "path": path }).to_string()),
+            is_active: true,
+            session_token: None,
+        }
+    }
+
+    type Downloads =
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, PathBuf>>>;
+
+    fn start(
+        resources: Vec<nodeinnet_p2p::SharedResource>,
+        folder: &str,
+        strategy: &str,
+    ) -> (std::sync::mpsc::Sender<AppEvent>, Downloads) {
+        let config = client_config::AppConfig::new("console-app-sync-test");
+        config.set("app.resources", resources);
+
+        let (app_tx, app_rx) = std::sync::mpsc::channel();
+        let (net_tx, net_rx) = tokio::sync::mpsc::channel(16);
+        let active_downloads: Downloads = Default::default();
+        let ctx = EventLoopContext {
+            app_rx,
+            refresh_token: String::new(),
+            net_tx,
+            active_downloads: active_downloads.clone(),
+            pending_uploads: Default::default(),
+            active_sync_strategy: std::sync::Arc::new(std::sync::Mutex::new(Some((
+                "peer".to_string(),
+                folder.to_string(),
+                strategy.to_string(),
+            )))),
+            known_peers: Default::default(),
+            my_info: NodeInfo {
+                id: "me".into(),
+                name: "me".into(),
+                os: std::env::consts::OS.into(),
+                version: String::new(),
+                app_type: String::new(),
+                build_type: String::new(),
+                public_key: String::new(),
+                resources: vec![],
+                is_online: true,
+                last_used: 0,
+                is_temporary: false,
+            },
+            ws_base: String::new(),
+            my_node_id: "me".into(),
+            exec_cmd: None,
+            app_tx: app_tx.clone(),
+            api_base: String::new(),
+            client_http: reqwest::Client::new(),
+            reconnect_attempt: 0,
+            reconnect_timeouts: vec![1],
+            config,
+        };
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        std::thread::spawn(move || {
+            let _net_rx = net_rx;
+            rt.block_on(async move { run_event_loop(ctx) });
+        });
+        (app_tx, active_downloads)
+    }
+
+    #[test]
+    fn a_pull_cannot_write_outside_the_sync_folder() {
+        let scratch = scratch();
+        let root = scratch.0.join("docs");
+        std::fs::create_dir_all(&root).unwrap();
+        let ok = root.join("ok.txt");
+        std::fs::write(&ok, b"old").unwrap();
+        let above = scratch.0.join("above.txt");
+        let elsewhere = scratch.0.join("elsewhere.txt");
+        std::fs::write(&above, b"original").unwrap();
+        std::fs::write(&elsewhere, b"original").unwrap();
+        let (app_tx, active_downloads) = start(vec![sync_folder("docs", &root)], "docs", "pull");
+
+        let response = P2pMessage::SyncStateResponse {
+            resource_id: "docs".into(),
+            available_folders: ["docs".to_string()].into(),
+            folder_states: [(
+                "docs".to_string(),
+                vec![
+                    remote("../above.txt"),
+                    remote(&elsewhere.to_string_lossy()),
+                    remote("ok.txt"),
+                ],
+            )]
+            .into(),
+        };
+        app_tx.send(AppEvent::P2pMessageReceived(response)).unwrap();
+        wait_for("the pull of ok.txt", || {
+            active_downloads.lock().unwrap().values().any(|p| *p == ok)
+        });
+
+        let pulls = active_downloads.lock().unwrap().clone();
+        let chunk = |transfer_id: uuid::Uuid, data: &[u8]| {
+            app_tx
+                .send(AppEvent::P2pMessageReceived(P2pMessage::FileChunk {
+                    transfer_id,
+                    offset: 0,
+                    data: data.to_vec(),
+                }))
+                .unwrap();
+        };
+        for (transfer_id, path) in &pulls {
+            if *path != ok {
+                chunk(*transfer_id, b"pwned");
+            }
+        }
+        for (transfer_id, path) in &pulls {
+            if *path == ok {
+                chunk(*transfer_id, b"new");
+            }
+        }
+        wait_for("ok.txt to arrive", || {
+            std::fs::read_to_string(&ok).unwrap() == "new"
+        });
+
+        assert_eq!(
+            [
+                std::fs::read_to_string(&above).unwrap(),
+                std::fs::read_to_string(&elsewhere).unwrap(),
+            ],
+            ["original", "original"]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_pull_skips_names_windows_would_rewrite() {
+        let scratch = scratch();
+        let root = scratch.0.join("docs");
+        std::fs::create_dir_all(&root).unwrap();
+        let ok = root.join("ok.txt");
+        let (app_tx, active_downloads) = start(vec![sync_folder("docs", &root)], "docs", "pull");
+
+        let response = P2pMessage::SyncStateResponse {
+            resource_id: "docs".into(),
+            available_folders: ["docs".to_string()].into(),
+            folder_states: [(
+                "docs".to_string(),
+                vec![
+                    remote("12:30.log"),
+                    remote("notes."),
+                    remote("sub/nul"),
+                    remote("com1.txt"),
+                    remote("ok.txt"),
+                ],
+            )]
+            .into(),
+        };
+        app_tx.send(AppEvent::P2pMessageReceived(response)).unwrap();
+        wait_for("the pull of ok.txt", || {
+            active_downloads.lock().unwrap().values().any(|p| *p == ok)
+        });
+
+        assert_eq!(
+            active_downloads
+                .lock()
+                .unwrap()
+                .values()
+                .collect::<Vec<_>>(),
+            [&ok]
+        );
+    }
+
+    #[test]
+    fn a_pulled_new_file_arrives() {
+        let scratch = scratch();
+        let root = scratch.0.join("docs");
+        std::fs::create_dir_all(&root).unwrap();
+        let (app_tx, active_downloads) = start(vec![sync_folder("docs", &root)], "docs", "pull");
+
+        let response = P2pMessage::SyncStateResponse {
+            resource_id: "docs".into(),
+            available_folders: ["docs".to_string()].into(),
+            folder_states: [("docs".to_string(), vec![remote("new.txt")])].into(),
+        };
+        app_tx.send(AppEvent::P2pMessageReceived(response)).unwrap();
+        let new = root.join("new.txt");
+        wait_for("the pull of new.txt", || {
+            active_downloads.lock().unwrap().values().any(|p| *p == new)
+        });
+
+        let transfer_id = *active_downloads.lock().unwrap().keys().next().unwrap();
+        for msg in [
+            P2pMessage::FileTransferResponse {
+                transfer_id,
+                status: nodeinnet_p2p::FileTransferStatus::Accepted { total_size: 3 },
+            },
+            P2pMessage::FileChunk {
+                transfer_id,
+                offset: 0,
+                data: b"new".to_vec(),
+            },
+        ] {
+            app_tx.send(AppEvent::P2pMessageReceived(msg)).unwrap();
+        }
+        wait_for("new.txt to arrive", || {
+            std::fs::read(&new).is_ok_and(|bytes| bytes == b"new")
+        });
+    }
+
+    #[test]
+    fn a_mirror_pull_leaves_the_other_sync_folders_alone() {
+        let scratch = scratch();
+        let docs = scratch.0.join("docs");
+        let notes = scratch.0.join("notes");
+        for dir in [&docs, &notes] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("README.md"), b"same").unwrap();
+        }
+        let resources = vec![sync_folder("docs", &docs), sync_folder("notes", &notes)];
+        let mut peer = node_functions::sync_folder::scan_local_resource_folders(&resources);
+        peer.retain(|name, _| name == "docs");
+        let (app_tx, active_downloads) = start(resources, "docs", "mirror_pull");
+
+        let marker = scratch.0.join("marker");
+        std::fs::write(&marker, b"").unwrap();
+        let after = uuid::Uuid::new_v4();
+        active_downloads
+            .lock()
+            .unwrap()
+            .insert(after, marker.clone());
+        for msg in [
+            P2pMessage::SyncStateResponse {
+                resource_id: "docs".into(),
+                available_folders: ["docs".to_string()].into(),
+                folder_states: peer,
+            },
+            P2pMessage::FileChunk {
+                transfer_id: after,
+                offset: 0,
+                data: b"done".to_vec(),
+            },
+        ] {
+            app_tx.send(AppEvent::P2pMessageReceived(msg)).unwrap();
+        }
+        wait_for("the sync pass", || {
+            std::fs::read(&marker).is_ok_and(|bytes| bytes == b"done")
+        });
+
+        assert!(docs.join("README.md").exists());
+        assert!(notes.join("README.md").exists());
+    }
+
+    #[test]
+    fn every_pull_lands_before_the_console_exits() {
+        let Some(dir) = std::env::var_os("CONSOLE_APP_PULLS") else {
+            let scratch = scratch();
+            let root = scratch.0.join("docs");
+            std::fs::create_dir_all(&root).unwrap();
+            for name in ["a.bin", "b.bin"] {
+                std::fs::write(root.join(name), b"old").unwrap();
+            }
+            let run = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "event_loop::tests::every_pull_lands_before_the_console_exits",
+                ])
+                .env("CONSOLE_APP_PULLS", &root)
+                .output()
+                .unwrap();
+            assert_eq!(
+                (
+                    run.status.code(),
+                    std::fs::read(root.join("b.bin")).unwrap()
+                ),
+                (Some(1), b"new b".to_vec()),
+                "{}",
+                String::from_utf8_lossy(&run.stdout)
+            );
+            return;
+        };
+        let root = PathBuf::from(dir);
+        let (app_tx, active_downloads) = start(vec![sync_folder("docs", &root)], "docs", "pull");
+
+        let response = P2pMessage::SyncStateResponse {
+            resource_id: "docs".into(),
+            available_folders: ["docs".to_string()].into(),
+            folder_states: [(
+                "docs".to_string(),
+                ["a.bin", "b.bin", "sub/c.bin", "d.bin"]
+                    .map(remote)
+                    .to_vec(),
+            )]
+            .into(),
+        };
+        app_tx.send(AppEvent::P2pMessageReceived(response)).unwrap();
+        wait_for("four pulls", || active_downloads.lock().unwrap().len() == 4);
+
+        let id = |name: &str| {
+            let pulls = active_downloads.lock().unwrap();
+            *pulls.iter().find(|(_, p)| p.ends_with(name)).unwrap().0
+        };
+        let (a, b, c, d) = (id("a.bin"), id("b.bin"), id("c.bin"), id("d.bin"));
+        let response = |transfer_id, status| P2pMessage::FileTransferResponse {
+            transfer_id,
+            status,
+        };
+        let accepted = nodeinnet_p2p::FileTransferStatus::Accepted { total_size: 5 };
+        let chunk = |transfer_id, offset, data: &[u8]| P2pMessage::FileChunk {
+            transfer_id,
+            offset,
+            data: data.to_vec(),
+        };
+        let complete = |transfer_id| P2pMessage::FileTransferComplete {
+            transfer_id,
+            checksum: None,
+        };
+        for msg in [
+            response(a, accepted.clone()),
+            response(b, accepted.clone()),
+            chunk(a, 0, b"new a"),
+            chunk(b, 0, b"ne"),
+            response(c, accepted),
+            response(
+                d,
+                nodeinnet_p2p::FileTransferStatus::Rejected {
+                    reason: "gone".into(),
+                },
+            ),
+            complete(a),
+            chunk(b, 2, b"w b"),
+            complete(b),
+        ] {
+            app_tx.send(AppEvent::P2pMessageReceived(msg)).unwrap();
+        }
+        wait_for("the console to exit", || false);
     }
 }

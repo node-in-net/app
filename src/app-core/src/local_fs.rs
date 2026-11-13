@@ -1,6 +1,7 @@
 use common::AppError;
 use fm_core::rpc::{FileSystemRpc, RemoteFileEntry};
-use std::path::{Path, PathBuf};
+use node_functions::names::Comparison;
+use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 pub struct LocalFsRpc {
@@ -14,7 +15,10 @@ impl LocalFsRpc {
 
     fn resolve(&self, scoped: &str) -> Result<PathBuf, AppError> {
         let rel = scoped.trim_start_matches('/');
-        if rel.split(['/', '\\']).any(|seg| seg == "..") {
+        if !Path::new(rel)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
+        {
             return Err(AppError::Other("path escapes the resource".into()));
         }
         Ok(if rel.is_empty() {
@@ -23,6 +27,43 @@ impl LocalFsRpc {
             self.base.join(rel)
         })
     }
+}
+
+pub(crate) fn is_plain_name(name: &str) -> bool {
+    let mut components = Path::new(name).components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(Component::Normal(only)), None) if only == name
+    ) && !(cfg!(windows) && node_functions::names::windows_refuses(name))
+}
+
+pub(crate) const LOCAL_COMPARISON: Comparison = if cfg!(windows) {
+    Comparison::Windows
+} else if cfg!(any(target_os = "macos", target_os = "android")) {
+    Comparison::MacOs
+} else {
+    Comparison::Exact
+};
+
+pub(crate) fn typed_root(typed: &str) -> Option<(PathBuf, String)> {
+    let mut components = Path::new(typed).components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return None;
+    };
+    let mut rest = Vec::new();
+    for component in components {
+        match component {
+            Component::Normal(name) => rest.push(name.to_string_lossy().into_owned()),
+            Component::ParentDir => {
+                rest.pop();
+            }
+            _ => {}
+        }
+    }
+    Some((
+        Path::new(prefix.as_os_str()).join(std::path::MAIN_SEPARATOR_STR),
+        format!("/{}", rest.join("/")),
+    ))
 }
 
 fn entry_of(path: &Path, name: String) -> Option<RemoteFileEntry> {
@@ -70,7 +111,7 @@ impl FileSystemRpc for LocalFsRpc {
         dir_name: String,
         _permissions: Option<u32>,
     ) -> Result<(), AppError> {
-        if dir_name.contains(['/', '\\']) {
+        if !is_plain_name(&dir_name) {
             return Err(AppError::Other("invalid directory name".into()));
         }
         let dir = self.resolve(&parent_path)?.join(dir_name);
@@ -237,6 +278,111 @@ mod tests {
             & 0o777;
         assert_eq!(mode, 0o600, "the real on-disk mode changed");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_drive_or_a_root_never_leads_out_of_the_resource() {
+        let dir = scratch("windows");
+        let outside = scratch("windows-outside");
+        let rpc = LocalFsRpc::new(&dir);
+        let escape = outside.join("x").to_string_lossy().into_owned();
+        for path in [
+            escape.clone(),
+            format!("/{escape}"),
+            "\\x".to_string(),
+            "/C:x".to_string(),
+            "/..\\x".to_string(),
+        ] {
+            assert!(
+                rpc.write_file(path.clone(), b"x".to_vec(), None, None)
+                    .await
+                    .is_err(),
+                "{path}"
+            );
+        }
+        assert!(!outside.join("x").exists());
+        for name in ["C:\\x", "C:x", "\\x", "..\\x", "C:"] {
+            assert!(
+                rpc.create_directory("/".into(), name.into(), None)
+                    .await
+                    .is_err(),
+                "{name}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_name_windows_would_rewrite_is_not_created() {
+        let dir = scratch("windows-rewrite");
+        std::fs::write(dir.join("notes"), b"keep").unwrap();
+        let rpc = LocalFsRpc::new(&dir);
+        for name in [
+            "12:30.log",
+            "notes.",
+            "notes ",
+            "nul",
+            "NUL .txt",
+            "com1",
+            "a?b",
+        ] {
+            let refused = rpc.create_directory("/".into(), name.into(), None).await;
+            assert!(
+                refused.is_err_and(|e| e.to_string().contains("invalid directory name")),
+                "{name}"
+            );
+        }
+        assert_eq!(std::fs::read(dir.join("notes")).unwrap(), b"keep");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_typed_drive_or_share_path_splits_at_its_root() {
+        for (typed, root, path) in [
+            (r"D:\data\x", r"D:\", "/data/x"),
+            ("D:/data", r"D:\", "/data"),
+            ("D:", r"D:\", "/"),
+            (r"\\server\share\x", r"\\server\share\", "/x"),
+        ] {
+            assert_eq!(
+                typed_root(typed),
+                Some((PathBuf::from(root), path.to_string())),
+                "{typed}"
+            );
+        }
+        for typed in ["/Users/me", r"\Users\me", "docs"] {
+            assert_eq!(typed_root(typed), None, "{typed}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dots_in_a_typed_path_step_up_but_never_above_its_root() {
+        for (typed, root, path) in [
+            (r"C:\Users\me\..\Public", r"C:\", "/Users/Public"),
+            (r"C:\Users\.\me", r"C:\", "/Users/me"),
+            ("D:/data/x/..", r"D:\", "/data"),
+            (r"D:\..\..\data", r"D:\", "/data"),
+            (r"\\server\share\..\x", r"\\server\share\", "/x"),
+        ] {
+            assert_eq!(
+                typed_root(typed),
+                Some((PathBuf::from(root), path.to_string())),
+                "{typed}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_typed_unix_path_stays_inside_the_panel_root() {
+        for typed in ["/home/me", "C:\\x", "//server/share/x"] {
+            assert_eq!(typed_root(typed), None, "{typed}");
+        }
     }
 
     #[tokio::test]
