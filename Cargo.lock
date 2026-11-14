@@ -4211,23 +4211,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "node-auth"
-version = "0.6.540"
-dependencies = [
- "client-config",
- "common",
- "glib-build-tools",
- "gtk4",
- "hostname 0.4.2",
- "libadwaita",
- "node-functions",
- "nodeinnet-i18n",
- "nodeinnet-p2p",
- "relm4",
- "tokio",
-]
-
-[[package]]
 name = "node-functions"
 version = "0.1.286"
 dependencies = [

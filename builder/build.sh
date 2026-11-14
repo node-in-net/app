@@ -461,11 +461,8 @@ EOF
         export PATH=$JAVA_HOME/bin:$PATH
         export GRADLE_USER_HOME="$WORKDIR/bin/distr/gradle-home-shared"
 
-        # GTK_STACK: the stack nodeinnet-builder.yml mounts; unset, src/gtk-app/android/build.sh fetches the release gtk-stack.lock pins.
-        if [ -n "${GTK_STACK:-}" ] && [ ! -d "$GTK_STACK/bin/gtk-stack/apk" ]; then
-            log_error "No GTK stack at GTK_STACK=$GTK_STACK (GTK_STACK_HOST: see builder/build-node-in-net.sh)"
-            exit 1
-        fi
+        # The GTK stack: src/gtk-app/android/build.sh fetches the release gtk-stack.lock pins into
+        # ~/.cache (in Docker: the container's own, 11 MB a build); GTK_STACK: a checkout instead.
 
         node ./builder/gen-version.js "$GEN_APP_TYPE" apk
 

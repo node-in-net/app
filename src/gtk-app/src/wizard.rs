@@ -308,14 +308,6 @@ impl SimpleComponent for WizardModel {
                 })
             });
         }
-        let guest = gtk::Button::with_label(&crate::i18n::tr("wizard.guest"));
-        guest.add_css_class("flat");
-        guest.add_css_class("link-accent");
-        guest.set_halign(gtk::Align::Center);
-        {
-            let send = send.clone();
-            guest.connect_clicked(move |_| send(ApiCmd::AuthGuest));
-        }
 
         let signin = page(&[
             icons::image("login", 72).upcast_ref(),
@@ -326,7 +318,6 @@ impl SimpleComponent for WizardModel {
             error_label.upcast_ref(),
             guest_check.upcast_ref(),
             field_clamp(&sign_in).upcast_ref(),
-            guest.upcast_ref(),
             reassure(&crate::i18n::tr("wizard.reassure_e2e")).upcast_ref(),
         ]);
 

@@ -2,7 +2,6 @@
 members = [
     "submodules/p2p-functions/web-davserver",
     "src/utils",
-    "src/node-auth",
     "src/gtk-app",
     "src/app-version",
     "src/app-core",
@@ -92,7 +91,6 @@ gtk-dialogs = { path = "src/dialogs" }
 
 # Local dependencies
 app-version = { path = "src/app-version" }
-node-auth = { path = "src/node-auth", default-features = false }
 web-davserver = { path = "submodules/p2p-functions/web-davserver" }
 
 [patch."https://github.com/node-in-net/p2p-common"]
