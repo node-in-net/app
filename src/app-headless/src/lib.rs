@@ -669,7 +669,8 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
                         app_net::store_shared_services(&net.config, &resources);
                         let _ = net
                             .net_tx
-                            .try_send(app_net::NetCmd::ReloadResources(resources));
+                            .send(app_net::NetCmd::ReloadResources(resources))
+                            .await;
                     }
                     None => eprintln!("[net] ✗ the network service is not shared"),
                 }
@@ -720,7 +721,8 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
                 app_net::store_shared_services(&net.config, &resources);
                 let _ = net
                     .net_tx
-                    .try_send(app_net::NetCmd::ReloadResources(resources));
+                    .send(app_net::NetCmd::ReloadResources(resources))
+                    .await;
             }
         }
         ReloadSharedServices => {
@@ -728,7 +730,8 @@ async fn apply(app: &mut App, cmd: ApiCmd) {
                 let resources = app_net::default_shared_resources(&net.config);
                 let _ = net
                     .net_tx
-                    .try_send(app_net::NetCmd::ReloadResources(resources));
+                    .send(app_net::NetCmd::ReloadResources(resources))
+                    .await;
             }
         }
         ReportVisiblePage { name } => {

@@ -47,7 +47,19 @@ pub enum AppEvent {
     P2pMessageReceived(P2pMessage),
     PeerDisconnected(String),
     DownloadComplete(std::path::PathBuf),
+    UploadUnanswered(uuid::Uuid),
 }
+
+const RECEIPT_WAIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+pub struct PendingUpload {
+    pub path: std::path::PathBuf,
+    pub node: String,
+    pub accepted: bool,
+}
+
+pub type Uploads =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, PendingUpload>>>;
 
 pub struct EventLoopContext {
     pub app_rx: std::sync::mpsc::Receiver<AppEvent>,
@@ -55,9 +67,7 @@ pub struct EventLoopContext {
     pub net_tx: tokio::sync::mpsc::Sender<NetCmd>,
     pub active_downloads:
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::path::PathBuf>>>,
-    pub pending_uploads: std::sync::Arc<
-        tokio::sync::Mutex<std::collections::HashMap<uuid::Uuid, (std::path::PathBuf, String)>>,
-    >,
+    pub pending_uploads: Uploads,
     pub active_sync_strategy: std::sync::Arc<std::sync::Mutex<Option<(String, String, String)>>>,
     pub known_peers: std::collections::HashSet<String>,
     pub my_info: nodeinnet_p2p::NodeInfo,
@@ -667,15 +677,14 @@ pub fn run_event_loop(ctx: EventLoopContext) {
                                                         .to_string_lossy()
                                                         .to_string();
 
-                                                    let pu = pending_uploads.clone();
-                                                    let l_path_clone = l_path.clone();
-                                                    let t_peer = target_peer.clone();
-                                                    tokio::spawn(async move {
-                                                        pu.lock().await.insert(
-                                                            transfer_id,
-                                                            (l_path_clone, t_peer),
-                                                        );
-                                                    });
+                                                    pending_uploads.lock().unwrap().insert(
+                                                        transfer_id,
+                                                        PendingUpload {
+                                                            path: l_path.clone(),
+                                                            node: target_peer.clone(),
+                                                            accepted: false,
+                                                        },
+                                                    );
 
                                                     let permissions = {
                                                         #[cfg(unix)]
@@ -715,6 +724,7 @@ pub fn run_event_loop(ctx: EventLoopContext) {
                                                                 .await;
                                                         }
                                                     });
+                                                    watch_acceptance(app_tx.clone(), transfer_id);
                                                 }
                                             }
                                             nodeinnet_p2p::p2p::SyncAction::DeleteLocal => {
@@ -969,74 +979,55 @@ pub fn run_event_loop(ctx: EventLoopContext) {
                                     println!("{} Error creating local file: {}", "❌".red(), e);
                                     transfer_failed = true;
                                     downloads.remove(&transfer_id);
-                                    if downloads.is_empty() {
+                                    if downloads.is_empty()
+                                        && pending_uploads.lock().unwrap().is_empty()
+                                    {
                                         std::process::exit(1);
                                     }
                                 }
-                            } else {
-                                let pending_uploads = pending_uploads.clone();
-                                let net_tx_upload = net_tx.clone();
+                            } else if let Some(upload) = pending_uploads
+                                .lock()
+                                .unwrap()
+                                .get_mut(&transfer_id)
+                                .filter(|upload| !upload.accepted)
+                            {
+                                upload.accepted = true;
+                                println!(
+                                    "{} Upload Accepted! Streaming {} bytes...",
+                                    "🔼".blue(),
+                                    total_size
+                                );
+                                let uploads = pending_uploads.clone();
+                                let net_tx = net_tx.clone();
+                                let app_tx = app_tx.clone();
+                                let (path, node) = (upload.path.clone(), upload.node.clone());
                                 tokio::spawn(async move {
-                                    let Some((upload_path, upload_node)) =
-                                        pending_uploads.lock().await.remove(&transfer_id)
-                                    else {
-                                        return;
-                                    };
-                                    println!(
-                                        "{} Upload Accepted! Streaming {} bytes...",
-                                        "🔼".blue(),
-                                        total_size
-                                    );
-                                    if let Ok(mut file) = tokio::fs::File::open(&upload_path).await
+                                    let failure = match send_upload(
+                                        &net_tx,
+                                        &uploads,
+                                        &node,
+                                        &path,
+                                        transfer_id,
+                                        total_size,
+                                    )
+                                    .await
                                     {
-                                        use tokio::io::AsyncReadExt;
-                                        let mut buffer = vec![0u8; 16 * 1024];
-                                        let mut offset = 0u64;
-                                        loop {
-                                            match file.read(&mut buffer).await {
-                                                Ok(0) => break,
-                                                Ok(n) => {
-                                                    let chunk =
-                                                        nodeinnet_p2p::P2pMessage::FileChunk {
-                                                            transfer_id,
-                                                            offset,
-                                                            data: buffer[..n].to_vec(),
-                                                        };
-                                                    let _ = net_tx_upload
-                                                        .send(NetCmd::SendToPeer(
-                                                            upload_node.clone(),
-                                                            chunk,
-                                                        ))
-                                                        .await;
-                                                    offset += n as u64;
-
-                                                    let progress =
-                                                        (offset as f64 / total_size as f64) * 100.0;
-                                                    print!(
-                                                        "\r{} Progress: {:.2}%",
-                                                        "[TRANS]".blue(),
-                                                        progress
-                                                    );
-                                                    std::io::Write::flush(&mut std::io::stdout())
-                                                        .unwrap();
-                                                }
-                                                Err(_) => break,
-                                            }
+                                        Ok(()) => {
+                                            tokio::time::sleep(RECEIPT_WAIT).await;
+                                            format!(
+                                                "the device did not confirm the upload within {} min",
+                                                RECEIPT_WAIT.as_secs() / 60
+                                            )
                                         }
-                                        let comp =
-                                            nodeinnet_p2p::P2pMessage::FileTransferComplete {
-                                                transfer_id,
-                                                checksum: None,
-                                            };
-                                        let _ = net_tx_upload
-                                            .send(NetCmd::SendToPeer(upload_node, comp))
-                                            .await;
-                                        println!(
-                                            "\n{} Upload Completed Successfully!",
-                                            "✅".green().bold()
-                                        );
-                                        std::process::exit(0);
-                                    }
+                                        Err(Some(reason)) => reason,
+                                        Err(None) => return,
+                                    };
+                                    let _ = app_tx.send(AppEvent::P2pMessageReceived(
+                                        P2pMessage::FileTransferReceipt {
+                                            transfer_id,
+                                            result: Err(failure),
+                                        },
+                                    ));
                                 });
                             }
                         }
@@ -1045,7 +1036,8 @@ pub fn run_event_loop(ctx: EventLoopContext) {
                             transfer_failed = true;
                             let mut downloads = active_downloads.lock().unwrap();
                             downloads.remove(&transfer_id);
-                            if downloads.is_empty() {
+                            pending_uploads.lock().unwrap().remove(&transfer_id);
+                            if downloads.is_empty() && pending_uploads.lock().unwrap().is_empty() {
                                 std::process::exit(1);
                             }
                         }
@@ -1070,11 +1062,21 @@ pub fn run_event_loop(ctx: EventLoopContext) {
                         let mut downloads = active_downloads.lock().unwrap();
                         if downloads.remove(&transfer_id).is_some() {
                             println!("\n{} Download Completed Successfully!", "✅".green().bold());
-                            if downloads.is_empty() {
+                            if downloads.is_empty() && pending_uploads.lock().unwrap().is_empty() {
                                 std::process::exit(if transfer_failed { 1 } else { 0 });
                             }
                         }
                     }
+                    P2pMessage::FileTransferReceipt {
+                        transfer_id,
+                        result,
+                    } => finish_upload(
+                        &pending_uploads,
+                        &active_downloads,
+                        &mut transfer_failed,
+                        transfer_id,
+                        result,
+                    ),
                     P2pMessage::TerminalOutput { data, .. } => {
                         use std::io::Write;
                         let mut stdout = std::io::stdout();
@@ -1088,9 +1090,127 @@ pub fn run_event_loop(ctx: EventLoopContext) {
                 AppEvent::PeerDisconnected(peer_id) => {
                     println!("{} Peer {} disconnected.", "[DISCONNECT]".red(), peer_id);
                 }
+                AppEvent::UploadUnanswered(transfer_id) => {
+                    let unanswered = pending_uploads
+                        .lock()
+                        .unwrap()
+                        .get(&transfer_id)
+                        .is_some_and(|upload| !upload.accepted);
+                    if unanswered {
+                        finish_upload(
+                            &pending_uploads,
+                            &active_downloads,
+                            &mut transfer_failed,
+                            transfer_id,
+                            Err(format!(
+                                "the device did not accept the upload within {} min",
+                                RECEIPT_WAIT.as_secs() / 60
+                            )),
+                        );
+                    }
+                }
             }
         }
     }
+}
+
+fn finish_upload(
+    uploads: &Uploads,
+    downloads: &std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::path::PathBuf>>,
+    transfer_failed: &mut bool,
+    transfer_id: uuid::Uuid,
+    result: Result<(), String>,
+) {
+    if uploads.lock().unwrap().remove(&transfer_id).is_none() {
+        return;
+    }
+    match result {
+        Ok(()) => println!("\n{} Upload Completed Successfully!", "✅".green().bold()),
+        Err(reason) => {
+            println!("\n{} Upload failed: {}", "❌".red(), reason);
+            *transfer_failed = true;
+        }
+    }
+    if downloads.lock().unwrap().is_empty() && uploads.lock().unwrap().is_empty() {
+        std::process::exit(if *transfer_failed { 1 } else { 0 });
+    }
+}
+
+pub fn watch_acceptance(app_tx: std::sync::mpsc::Sender<AppEvent>, transfer_id: uuid::Uuid) {
+    tokio::spawn(async move {
+        tokio::time::sleep(RECEIPT_WAIT).await;
+        let _ = app_tx.send(AppEvent::UploadUnanswered(transfer_id));
+    });
+}
+
+async fn queue_upload(
+    net_tx: &tokio::sync::mpsc::Sender<NetCmd>,
+    node: &str,
+    msg: P2pMessage,
+) -> Result<(), Option<String>> {
+    match tokio::time::timeout(
+        RECEIPT_WAIT,
+        net_tx.send(NetCmd::SendToPeer(node.to_string(), msg)),
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(Some("the network stopped".to_string())),
+        Err(_) => Err(Some(format!(
+            "the upload stalled: nothing left the queue for {} min",
+            RECEIPT_WAIT.as_secs() / 60
+        ))),
+    }
+}
+
+async fn send_upload(
+    net_tx: &tokio::sync::mpsc::Sender<NetCmd>,
+    uploads: &Uploads,
+    node: &str,
+    path: &std::path::Path,
+    transfer_id: uuid::Uuid,
+    total_size: u64,
+) -> Result<(), Option<String>> {
+    use tokio::io::AsyncReadExt;
+    let mut unread = None;
+    match tokio::fs::File::open(path).await {
+        Ok(mut file) => {
+            let mut buffer = vec![0u8; 16 * 1024];
+            let mut offset = 0u64;
+            loop {
+                if !uploads.lock().unwrap().contains_key(&transfer_id) {
+                    return Err(None);
+                }
+                match file.read(&mut buffer).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let chunk = P2pMessage::FileChunk {
+                            transfer_id,
+                            offset,
+                            data: buffer[..n].to_vec(),
+                        };
+                        queue_upload(net_tx, node, chunk).await?;
+                        offset += n as u64;
+
+                        let progress = (offset as f64 / total_size as f64) * 100.0;
+                        print!("\r{} Progress: {:.2}%", "[TRANS]".blue(), progress);
+                        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                    }
+                    Err(e) => {
+                        unread = Some(e.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+        Err(e) => unread = Some(e.to_string()),
+    }
+    let complete = P2pMessage::FileTransferComplete {
+        transfer_id,
+        checksum: None,
+    };
+    queue_upload(net_tx, node, complete).await?;
+    unread.map_or(Ok(()), |reason| Err(Some(reason)))
 }
 
 #[cfg(test)]
@@ -1146,7 +1266,11 @@ mod tests {
         resources: Vec<nodeinnet_p2p::SharedResource>,
         folder: &str,
         strategy: &str,
-    ) -> (std::sync::mpsc::Sender<AppEvent>, Downloads) {
+    ) -> (
+        std::sync::mpsc::Sender<AppEvent>,
+        Downloads,
+        tokio::sync::mpsc::Receiver<NetCmd>,
+    ) {
         let config = client_config::AppConfig::new("console-app-sync-test");
         config.set("app.resources", resources);
 
@@ -1194,10 +1318,9 @@ mod tests {
             .build()
             .unwrap();
         std::thread::spawn(move || {
-            let _net_rx = net_rx;
             rt.block_on(async move { run_event_loop(ctx) });
         });
-        (app_tx, active_downloads)
+        (app_tx, active_downloads, net_rx)
     }
 
     #[test]
@@ -1211,7 +1334,8 @@ mod tests {
         let elsewhere = scratch.0.join("elsewhere.txt");
         std::fs::write(&above, b"original").unwrap();
         std::fs::write(&elsewhere, b"original").unwrap();
-        let (app_tx, active_downloads) = start(vec![sync_folder("docs", &root)], "docs", "pull");
+        let (app_tx, active_downloads, _net_rx) =
+            start(vec![sync_folder("docs", &root)], "docs", "pull");
 
         let response = P2pMessage::SyncStateResponse {
             resource_id: "docs".into(),
@@ -1271,7 +1395,8 @@ mod tests {
         let root = scratch.0.join("docs");
         std::fs::create_dir_all(&root).unwrap();
         let ok = root.join("ok.txt");
-        let (app_tx, active_downloads) = start(vec![sync_folder("docs", &root)], "docs", "pull");
+        let (app_tx, active_downloads, _net_rx) =
+            start(vec![sync_folder("docs", &root)], "docs", "pull");
 
         let response = P2pMessage::SyncStateResponse {
             resource_id: "docs".into(),
@@ -1308,7 +1433,8 @@ mod tests {
         let scratch = scratch();
         let root = scratch.0.join("docs");
         std::fs::create_dir_all(&root).unwrap();
-        let (app_tx, active_downloads) = start(vec![sync_folder("docs", &root)], "docs", "pull");
+        let (app_tx, active_downloads, _net_rx) =
+            start(vec![sync_folder("docs", &root)], "docs", "pull");
 
         let response = P2pMessage::SyncStateResponse {
             resource_id: "docs".into(),
@@ -1352,7 +1478,7 @@ mod tests {
         let resources = vec![sync_folder("docs", &docs), sync_folder("notes", &notes)];
         let mut peer = node_functions::sync_folder::scan_local_resource_folders(&resources);
         peer.retain(|name, _| name == "docs");
-        let (app_tx, active_downloads) = start(resources, "docs", "mirror_pull");
+        let (app_tx, active_downloads, _net_rx) = start(resources, "docs", "mirror_pull");
 
         let marker = scratch.0.join("marker");
         std::fs::write(&marker, b"").unwrap();
@@ -1412,7 +1538,8 @@ mod tests {
             return;
         };
         let root = PathBuf::from(dir);
-        let (app_tx, active_downloads) = start(vec![sync_folder("docs", &root)], "docs", "pull");
+        let (app_tx, active_downloads, _net_rx) =
+            start(vec![sync_folder("docs", &root)], "docs", "pull");
 
         let response = P2pMessage::SyncStateResponse {
             resource_id: "docs".into(),
@@ -1466,5 +1593,263 @@ mod tests {
             app_tx.send(AppEvent::P2pMessageReceived(msg)).unwrap();
         }
         wait_for("the console to exit", || false);
+    }
+
+    fn rerun(test: &str, var: &str, root: &std::path::Path) -> (Option<i32>, String) {
+        let run = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env(var, root)
+            .output()
+            .unwrap();
+        (
+            run.status.code(),
+            String::from_utf8_lossy(&run.stdout).into_owned(),
+        )
+    }
+
+    fn next_sent(net_rx: &mut tokio::sync::mpsc::Receiver<NetCmd>) -> P2pMessage {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match net_rx.try_recv() {
+                Ok(NetCmd::SendToPeer(_, msg)) => return msg,
+                Ok(_) => {}
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    assert!(Instant::now() < deadline, "the console sent nothing");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => panic!("the console's network channel closed: {e}"),
+            }
+        }
+    }
+
+    fn stream_ends(net_rx: &mut tokio::sync::mpsc::Receiver<NetCmd>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        loop {
+            match next_sent(net_rx) {
+                P2pMessage::FileChunk { data, .. } => bytes.extend(data),
+                P2pMessage::FileTransferComplete { .. } => return bytes,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    const ANSWERED: &str = "the receipt goes out now";
+
+    fn push_answered_with(dir: std::ffi::OsString, result: Result<(), String>) {
+        let root = PathBuf::from(dir);
+        let (app_tx, _downloads, mut net_rx) =
+            start(vec![sync_folder("docs", &root)], "docs", "push");
+        let empty = P2pMessage::SyncStateResponse {
+            resource_id: "docs".into(),
+            available_folders: ["docs".to_string()].into(),
+            folder_states: [("docs".to_string(), vec![])].into(),
+        };
+        app_tx.send(AppEvent::P2pMessageReceived(empty)).unwrap();
+        let P2pMessage::FileUploadRequest { transfer_id, .. } = next_sent(&mut net_rx) else {
+            panic!("the push was not announced");
+        };
+        app_tx
+            .send(AppEvent::P2pMessageReceived(
+                P2pMessage::FileTransferResponse {
+                    transfer_id,
+                    status: nodeinnet_p2p::FileTransferStatus::Accepted { total_size: 3 },
+                },
+            ))
+            .unwrap();
+        assert_eq!(stream_ends(&mut net_rx), b"new");
+
+        std::thread::sleep(Duration::from_millis(500));
+        println!("{ANSWERED}");
+        app_tx
+            .send(AppEvent::P2pMessageReceived(
+                P2pMessage::FileTransferReceipt {
+                    transfer_id,
+                    result,
+                },
+            ))
+            .unwrap();
+        wait_for("the console to exit", || false);
+    }
+
+    #[test]
+    fn a_push_exits_zero_only_after_the_peer_confirms_it() {
+        const VAR: &str = "CONSOLE_APP_PUSH_OK";
+        let Some(dir) = std::env::var_os(VAR) else {
+            let scratch = scratch();
+            let root = scratch.0.join("docs");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("a.bin"), b"new").unwrap();
+            let (code, stdout) = rerun(
+                "event_loop::tests::a_push_exits_zero_only_after_the_peer_confirms_it",
+                VAR,
+                &root,
+            );
+            assert_eq!(
+                (code, stdout.contains(ANSWERED)),
+                (Some(0), true),
+                "{stdout}"
+            );
+            return;
+        };
+        push_answered_with(dir, Ok(()));
+    }
+
+    #[test]
+    fn a_push_the_peer_did_not_store_exits_one() {
+        const VAR: &str = "CONSOLE_APP_PUSH_ERR";
+        let Some(dir) = std::env::var_os(VAR) else {
+            let scratch = scratch();
+            let root = scratch.0.join("docs");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("a.bin"), b"new").unwrap();
+            let (code, stdout) = rerun(
+                "event_loop::tests::a_push_the_peer_did_not_store_exits_one",
+                VAR,
+                &root,
+            );
+            assert_eq!(
+                (code, stdout.contains(ANSWERED)),
+                (Some(1), true),
+                "{stdout}"
+            );
+            assert!(stdout.contains("No space left on device"), "{stdout}");
+            return;
+        };
+        push_answered_with(dir, Err("No space left on device (os error 28)".into()));
+    }
+
+    #[test]
+    fn the_console_waits_for_every_push_and_pull() {
+        const VAR: &str = "CONSOLE_APP_MIXED";
+        let Some(dir) = std::env::var_os(VAR) else {
+            let scratch = scratch();
+            let root = scratch.0.join("docs");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("a.bin"), b"new a").unwrap();
+            let (code, stdout) = rerun(
+                "event_loop::tests::the_console_waits_for_every_push_and_pull",
+                VAR,
+                &root,
+            );
+            assert_eq!(
+                (code, stdout.contains(ANSWERED)),
+                (Some(0), true),
+                "{stdout}"
+            );
+            assert_eq!(std::fs::read(root.join("b.bin")).unwrap(), b"new b");
+            return;
+        };
+        let root = PathBuf::from(dir);
+        let (app_tx, _downloads, mut net_rx) = start(
+            vec![sync_folder("docs", &root)],
+            "docs",
+            "push-local-new,pull-remote-new",
+        );
+        let remote_b = P2pMessage::SyncStateResponse {
+            resource_id: "docs".into(),
+            available_folders: ["docs".to_string()].into(),
+            folder_states: [("docs".to_string(), vec![remote("b.bin")])].into(),
+        };
+        app_tx.send(AppEvent::P2pMessageReceived(remote_b)).unwrap();
+        let (mut push, mut pull) = (None, None);
+        while push.is_none() || pull.is_none() {
+            match next_sent(&mut net_rx) {
+                P2pMessage::FileUploadRequest { transfer_id, .. } => push = Some(transfer_id),
+                P2pMessage::FileDownloadRequest { transfer_id, .. } => pull = Some(transfer_id),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        let (push, pull) = (push.unwrap(), pull.unwrap());
+        let accepted = nodeinnet_p2p::FileTransferStatus::Accepted { total_size: 5 };
+        let send = |msg| app_tx.send(AppEvent::P2pMessageReceived(msg)).unwrap();
+        send(P2pMessage::FileTransferResponse {
+            transfer_id: push,
+            status: accepted.clone(),
+        });
+        assert_eq!(stream_ends(&mut net_rx), b"new a");
+        for msg in [
+            P2pMessage::FileTransferResponse {
+                transfer_id: pull,
+                status: accepted,
+            },
+            P2pMessage::FileChunk {
+                transfer_id: pull,
+                offset: 0,
+                data: b"new b".to_vec(),
+            },
+            P2pMessage::FileTransferComplete {
+                transfer_id: pull,
+                checksum: None,
+            },
+            P2pMessage::FileTransferReceipt {
+                transfer_id: uuid::Uuid::new_v4(),
+                result: Err("not ours".into()),
+            },
+        ] {
+            send(msg);
+        }
+
+        std::thread::sleep(Duration::from_millis(500));
+        println!("{ANSWERED}");
+        send(P2pMessage::FileTransferReceipt {
+            transfer_id: push,
+            result: Ok(()),
+        });
+        wait_for("the console to exit", || false);
+    }
+
+    #[test]
+    fn a_push_whose_request_could_not_go_out_exits_one() {
+        const VAR: &str = "CONSOLE_APP_PUSH_UNSENT";
+        let Some(dir) = std::env::var_os(VAR) else {
+            let scratch = scratch();
+            let root = scratch.0.join("docs");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("a.bin"), b"new").unwrap();
+            let (code, stdout) = rerun(
+                "event_loop::tests::a_push_whose_request_could_not_go_out_exits_one",
+                VAR,
+                &root,
+            );
+            assert_eq!(code, Some(1), "{stdout}");
+            assert!(stdout.contains("no connection to the device"), "{stdout}");
+            return;
+        };
+        let root = PathBuf::from(dir);
+        let (app_tx, _downloads, mut net_rx) =
+            start(vec![sync_folder("docs", &root)], "docs", "push");
+        let empty = P2pMessage::SyncStateResponse {
+            resource_id: "docs".into(),
+            available_folders: ["docs".to_string()].into(),
+            folder_states: [("docs".to_string(), vec![])].into(),
+        };
+        app_tx.send(AppEvent::P2pMessageReceived(empty)).unwrap();
+        let P2pMessage::FileUploadRequest { transfer_id, .. } = next_sent(&mut net_rx) else {
+            panic!("the push was not announced");
+        };
+        app_tx
+            .send(AppEvent::P2pMessageReceived(
+                P2pMessage::FileTransferReceipt {
+                    transfer_id,
+                    result: Err("no connection to the device".into()),
+                },
+            ))
+            .unwrap();
+        wait_for("the console to exit", || false);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_push_nobody_accepts_is_given_up_only_after_an_hour() {
+        let (app_tx, app_rx) = std::sync::mpsc::channel();
+        let transfer_id = uuid::Uuid::new_v4();
+
+        watch_acceptance(app_tx, transfer_id);
+        tokio::time::sleep(RECEIPT_WAIT - Duration::from_secs(1)).await;
+        assert!(app_rx.try_recv().is_err(), "the push was given up early");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(matches!(
+            app_rx.try_recv(),
+            Ok(AppEvent::UploadUnanswered(id)) if id == transfer_id
+        ));
     }
 }

@@ -470,11 +470,7 @@ pub async fn start_application(args: crate::cli::Args) {
         uuid::Uuid,
         std::path::PathBuf,
     >::new()));
-    let pending_uploads =
-        std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
-            uuid::Uuid,
-            (std::path::PathBuf, String),
-        >::new()));
+    let pending_uploads: crate::event_loop::Uploads = Default::default();
 
     let active_sync_strategy =
         std::sync::Arc::new(std::sync::Mutex::new(None::<(String, String, String)>));
@@ -484,6 +480,7 @@ pub async fn start_application(args: crate::cli::Args) {
         let active_downloads_exec = active_downloads.clone();
         let pending_uploads_exec = pending_uploads.clone();
         let active_sync_strategy_exec = active_sync_strategy.clone();
+        let app_tx_exec = app_tx.clone();
         tokio::spawn(async move {
             crate::exec_command::execute_command(
                 exec_cmd,
@@ -491,6 +488,7 @@ pub async fn start_application(args: crate::cli::Args) {
                 active_downloads_exec,
                 pending_uploads_exec,
                 active_sync_strategy_exec,
+                app_tx_exec,
             )
             .await;
         });

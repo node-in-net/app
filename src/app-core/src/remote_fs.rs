@@ -94,6 +94,44 @@ impl PendingTransfers {
             let _ = tx.send(TransferEvent::Done(result));
         }
     }
+
+    pub fn resolve(&self, msg: P2pMessage) -> Option<P2pMessage> {
+        let P2pMessage::FileTransferReceipt {
+            transfer_id,
+            result,
+        } = &msg
+        else {
+            return Some(msg);
+        };
+        match self.map.lock().unwrap().remove(transfer_id) {
+            Some(tx) => {
+                let _ = tx.send(TransferEvent::Done(result.clone()));
+                None
+            }
+            None => Some(msg),
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.lock().unwrap().len()
+    }
+}
+
+async fn confirmation(rx: &mut mpsc::UnboundedReceiver<TransferEvent>) -> Result<(), AppError> {
+    loop {
+        match rx.recv().await {
+            Some(TransferEvent::Done(result)) => return result.map_err(AppError::Other),
+            Some(TransferEvent::Progress { .. }) => {}
+            None => return Err(AppError::Other("upload dropped".into())),
+        }
+    }
+}
+
+fn ended_early(answer: Result<(), AppError>) -> AppError {
+    answer
+        .err()
+        .unwrap_or_else(|| AppError::Other("the device answered before the upload ended".into()))
 }
 
 const UPLOAD_CHUNK: usize = 16 * 1024;
@@ -106,6 +144,7 @@ pub struct RemotePeerFsRpc {
     bulk: Option<mpsc::Sender<P2pMessage>>,
     timeout: Duration,
     stall_timeout: Duration,
+    receipt_timeout: Duration,
 }
 
 impl RemotePeerFsRpc {
@@ -123,6 +162,7 @@ impl RemotePeerFsRpc {
             bulk: None,
             timeout: Duration::from_secs(15),
             stall_timeout: Duration::from_secs(30),
+            receipt_timeout: Duration::from_secs(60 * 60),
         }
     }
 
@@ -141,6 +181,11 @@ impl RemotePeerFsRpc {
         self
     }
 
+    pub fn with_receipt_timeout(mut self, timeout: Duration) -> Self {
+        self.receipt_timeout = timeout;
+        self
+    }
+
     async fn call(&self, request_id: Uuid, msg: P2pMessage) -> Result<P2pMessage, AppError> {
         let rx = self.pending.register(request_id);
         (self.send)(msg);
@@ -151,6 +196,26 @@ impl RemotePeerFsRpc {
                 self.pending.forget(&request_id);
                 Err(AppError::Other("peer did not answer in time".into()))
             }
+        }
+    }
+
+    async fn queue(
+        &self,
+        bulk: &mpsc::Sender<P2pMessage>,
+        receipt: &mut mpsc::UnboundedReceiver<TransferEvent>,
+        msg: P2pMessage,
+    ) -> Result<(), AppError> {
+        tokio::select! {
+            biased;
+            answer = confirmation(receipt) => Err(ended_early(answer)),
+            sent = tokio::time::timeout(self.receipt_timeout, bulk.send(msg)) => match sent {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(_)) => Err(AppError::Other("the transfer queue closed mid-upload".into())),
+                Err(_) => Err(AppError::Other(format!(
+                    "the upload stalled: nothing left the queue for {} min",
+                    self.receipt_timeout.as_secs() / 60
+                ))),
+            },
         }
     }
 }
@@ -354,64 +419,84 @@ impl FileSystemRpc for RemotePeerFsRpc {
 
         let transfer_id = Uuid::new_v4();
         let total_size = content.len() as u64;
-        let rx = self.pending.register(transfer_id);
-        (self.send)(P2pMessage::FileUploadRequest {
-            resource_id: self.resource_id.clone(),
-            target_path,
-            file_name,
-            total_size,
-            transfer_id,
-            permissions,
-        });
-
-        match tokio::time::timeout(self.timeout, rx).await {
-            Ok(Ok(P2pMessage::FileTransferResponse { status, .. })) => match status {
-                nodeinnet_p2p::FileTransferStatus::Accepted { .. } => {}
-                nodeinnet_p2p::FileTransferStatus::Rejected { reason } => {
-                    return Err(AppError::Other(format!(
-                        "peer refused the upload: {reason}"
-                    )))
-                }
-            },
-            Ok(Ok(_)) => return Err(unexpected("FileTransferResponse")),
-            Ok(Err(_)) => return Err(AppError::Other("upload dropped".into())),
-            Err(_) => {
-                self.pending.forget(&transfer_id);
-                return Err(AppError::Other(
-                    "peer did not accept the upload in time".into(),
-                ));
-            }
-        }
-
-        let mut last_report = std::time::Instant::now() - Duration::from_millis(200);
-        let mut offset: usize = 0;
-        for chunk in content.chunks(UPLOAD_CHUNK) {
-            bulk.send(P2pMessage::FileChunk {
+        let mut receipt = self.transfers.register(transfer_id);
+        let stored: Result<(), AppError> = async {
+            let accepted = self.pending.register(transfer_id);
+            (self.send)(P2pMessage::FileUploadRequest {
+                resource_id: self.resource_id.clone(),
+                target_path,
+                file_name,
+                total_size,
                 transfer_id,
-                offset: offset as u64,
-                data: chunk.to_vec(),
-            })
-            .await
-            .map_err(|_| AppError::Other("the transfer queue closed mid-upload".into()))?;
-            offset += chunk.len();
-            if let Some(cb) = &progress_callback {
-                if last_report.elapsed() >= Duration::from_millis(100) {
-                    cb(offset as u64);
-                    last_report = std::time::Instant::now();
+                permissions,
+            });
+
+            tokio::select! {
+                biased;
+                answer = confirmation(&mut receipt) => {
+                    self.pending.forget(&transfer_id);
+                    return Err(ended_early(answer));
+                }
+                answer = tokio::time::timeout(self.timeout, accepted) => match answer {
+                    Ok(Ok(P2pMessage::FileTransferResponse { status, .. })) => match status {
+                        nodeinnet_p2p::FileTransferStatus::Accepted { .. } => {}
+                        nodeinnet_p2p::FileTransferStatus::Rejected { reason } => {
+                            return Err(AppError::Other(format!(
+                                "peer refused the upload: {reason}"
+                            )))
+                        }
+                    },
+                    Ok(Ok(_)) => return Err(unexpected("FileTransferResponse")),
+                    Ok(Err(_)) => return Err(AppError::Other("upload dropped".into())),
+                    Err(_) => {
+                        self.pending.forget(&transfer_id);
+                        return Err(AppError::Other(
+                            "peer did not accept the upload in time".into(),
+                        ));
+                    }
+                },
+            }
+
+            let mut last_report = std::time::Instant::now() - Duration::from_millis(200);
+            let mut offset: usize = 0;
+            for chunk in content.chunks(UPLOAD_CHUNK) {
+                let msg = P2pMessage::FileChunk {
+                    transfer_id,
+                    offset: offset as u64,
+                    data: chunk.to_vec(),
+                };
+                self.queue(&bulk, &mut receipt, msg).await?;
+                offset += chunk.len();
+                if let Some(cb) = &progress_callback {
+                    if last_report.elapsed() >= Duration::from_millis(100) {
+                        cb(offset as u64);
+                        last_report = std::time::Instant::now();
+                    }
                 }
             }
-        }
-        if let Some(cb) = &progress_callback {
-            cb(offset as u64);
-        }
+            if let Some(cb) = &progress_callback {
+                cb(offset as u64);
+            }
 
-        bulk.send(P2pMessage::FileTransferComplete {
-            transfer_id,
-            checksum: None,
-        })
-        .await
-        .map_err(|_| AppError::Other("the transfer queue closed before the end".into()))?;
-        Ok(())
+            let complete = P2pMessage::FileTransferComplete {
+                transfer_id,
+                checksum: None,
+            };
+            self.queue(&bulk, &mut receipt, complete).await?;
+            tokio::time::timeout(self.receipt_timeout, confirmation(&mut receipt))
+                .await
+                .unwrap_or_else(|_| {
+                    Err(AppError::Other(format!(
+                        "the device did not confirm the upload within {} min",
+                        self.receipt_timeout.as_secs() / 60
+                    )))
+                })
+        }
+        .await;
+        if stored.is_err() {
+            self.transfers.forget(&transfer_id);
+        }
+        stored
     }
 }
 
@@ -704,15 +789,36 @@ mod tests {
         out
     }
 
+    fn receipt_of(transfer_id: Uuid, result: Result<(), String>) -> P2pMessage {
+        P2pMessage::FileTransferReceipt {
+            transfer_id,
+            result,
+        }
+    }
+
+    fn ended(bulk: &[P2pMessage]) -> Uuid {
+        match bulk.last() {
+            Some(P2pMessage::FileTransferComplete { transfer_id, .. }) => *transfer_id,
+            other => panic!("the upload did not end with FileTransferComplete: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn write_file_announces_then_streams_chunks() {
-        let (rpc, _pending, _transfers, sent) = rig(accepts_upload);
+        let (rpc, _pending, transfers, sent) = rig(accepts_upload);
         let (tx, mut rx) = mpsc::channel::<P2pMessage>(1);
         let rpc = rpc.with_bulk_sender(tx);
         let content = vec![7u8; UPLOAD_CHUNK * 2 + 5];
+        let peer = async {
+            let bulk = drain_bulk(&mut rx).await;
+            assert!(transfers
+                .resolve(receipt_of(ended(&bulk), Ok(())))
+                .is_none());
+            bulk
+        };
         let (res, bulk) = tokio::join!(
             rpc.write_file("/docs/big.bin".into(), content.clone(), Some(0o644), None),
-            drain_bulk(&mut rx)
+            peer
         );
         res.expect("upload accepted");
 
@@ -752,6 +858,147 @@ mod tests {
             matches!(bulk.last(), Some(P2pMessage::FileTransferComplete { .. })),
             "the peer is told when to stop waiting",
         );
+    }
+
+    async fn upload_answered_with(result: Result<(), String>) -> Result<(), AppError> {
+        let (rpc, _pending, transfers, _sent) = rig(accepts_upload);
+        let (tx, mut rx) = mpsc::channel::<P2pMessage>(4);
+        let rpc = rpc.with_bulk_sender(tx);
+        let write = rpc.write_file("/docs/a.txt".into(), b"hello".to_vec(), None, None);
+        tokio::pin!(write);
+        let bulk = tokio::select! {
+            done = &mut write => panic!("write_file returned before the upload ended: {done:?}"),
+            bulk = drain_bulk(&mut rx) => bulk,
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut write)
+                .await
+                .is_err(),
+            "write_file returned before the peer answered"
+        );
+        assert!(transfers
+            .resolve(receipt_of(ended(&bulk), result))
+            .is_none());
+        let written = write.await;
+        assert_eq!(transfers.len(), 0);
+        written
+    }
+
+    #[tokio::test]
+    async fn write_file_succeeds_only_once_the_peer_confirms_it() {
+        assert_eq!(upload_answered_with(Ok(())).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn write_file_reports_why_the_peer_did_not_store_the_file() {
+        let err = upload_answered_with(Err("No space left on device (os error 28)".into()))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("No space left"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_error_while_streaming_stops_the_upload() {
+        let (rpc, _pending, transfers, _sent) = rig(accepts_upload);
+        let (tx, mut rx) = mpsc::channel::<P2pMessage>(1);
+        let rpc = rpc.with_bulk_sender(tx);
+        let peer = async {
+            let Some(P2pMessage::FileChunk { transfer_id, .. }) = rx.recv().await else {
+                panic!("the upload sent no chunk");
+            };
+            let gone = "the connection to the device ended before it confirmed the upload";
+            assert!(transfers
+                .resolve(receipt_of(transfer_id, Err(gone.into())))
+                .is_none());
+            let mut more = Vec::new();
+            while let Ok(Some(msg)) =
+                tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+            {
+                more.push(msg);
+            }
+            more
+        };
+        let (written, more) = tokio::join!(
+            rpc.write_file("/big.bin".into(), vec![1; UPLOAD_CHUNK * 10], None, None),
+            peer
+        );
+
+        let err = written.unwrap_err();
+        assert!(
+            err.to_string().contains("ended before it confirmed"),
+            "{err}"
+        );
+        assert!(more.len() <= 1, "{} more chunks went out", more.len());
+        assert!(!more
+            .iter()
+            .any(|m| matches!(m, P2pMessage::FileTransferComplete { .. })));
+        assert_eq!(transfers.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_receipt_in_place_of_acceptance_fails_the_upload() {
+        let captured: Rc<RefCell<Option<Uuid>>> = Rc::new(RefCell::new(None));
+        let (rpc, pending, transfers, _sent) = rig({
+            let captured = captured.clone();
+            move |req| {
+                if let P2pMessage::FileUploadRequest { transfer_id, .. } = req {
+                    *captured.borrow_mut() = Some(*transfer_id);
+                }
+                None
+            }
+        });
+        let (tx, _rx) = mpsc::channel::<P2pMessage>(4);
+        let rpc = rpc
+            .with_bulk_sender(tx)
+            .with_timeout(Duration::from_secs(5));
+        let peer = async {
+            let transfer_id = loop {
+                if let Some(id) = *captured.borrow() {
+                    break id;
+                }
+                tokio::task::yield_now().await;
+            };
+            let gone = "the connection to the device ended before it confirmed the upload";
+            assert!(transfers
+                .resolve(receipt_of(transfer_id, Err(gone.into())))
+                .is_none());
+        };
+        let started = std::time::Instant::now();
+        let (written, _) = tokio::join!(
+            rpc.write_file("/x.bin".into(), vec![1, 2, 3], None, None),
+            peer
+        );
+
+        assert!(written.unwrap_err().to_string().contains("ended before"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!((pending.len(), transfers.len()), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn write_file_gives_up_when_no_receipt_comes() {
+        let (rpc, _pending, transfers, _sent) = rig(accepts_upload);
+        let (tx, mut rx) = mpsc::channel::<P2pMessage>(4);
+        let rpc = rpc
+            .with_bulk_sender(tx)
+            .with_receipt_timeout(Duration::from_millis(200));
+        let (written, _) = tokio::join!(
+            rpc.write_file("/x.bin".into(), vec![1, 2, 3], None, None),
+            drain_bulk(&mut rx)
+        );
+
+        assert!(
+            written.unwrap_err().to_string().contains("did not confirm"),
+            "the upload passed without a receipt"
+        );
+        assert_eq!(transfers.len(), 0);
+    }
+
+    #[test]
+    fn a_receipt_nobody_waits_for_is_handed_back() {
+        let transfers = PendingTransfers::default();
+        let stray = receipt_of(Uuid::new_v4(), Ok(()));
+        assert!(transfers.resolve(stray).is_some());
+        assert!(transfers.resolve(P2pMessage::Goodbye).is_some());
     }
 
     #[tokio::test]

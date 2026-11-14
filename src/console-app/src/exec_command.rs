@@ -7,10 +7,9 @@ pub async fn execute_command(
     active_downloads_exec: std::sync::Arc<
         std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::path::PathBuf>>,
     >,
-    pending_uploads_exec: std::sync::Arc<
-        tokio::sync::Mutex<std::collections::HashMap<uuid::Uuid, (std::path::PathBuf, String)>>,
-    >,
+    pending_uploads_exec: crate::event_loop::Uploads,
     active_sync_strategy_exec: std::sync::Arc<std::sync::Mutex<Option<(String, String, String)>>>,
+    app_tx_exec: std::sync::mpsc::Sender<crate::event_loop::AppEvent>,
 ) {
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
     println!("{} Auto-executing command: {}", "🤖".cyan(), exec_cmd);
@@ -579,10 +578,14 @@ pub async fn execute_command(
 
                 if let Ok(meta) = std::fs::metadata(&local_path) {
                     let transfer_id = uuid::Uuid::new_v4();
-                    pending_uploads_exec
-                        .lock()
-                        .await
-                        .insert(transfer_id, (local_path.clone(), node_id.clone()));
+                    pending_uploads_exec.lock().unwrap().insert(
+                        transfer_id,
+                        crate::event_loop::PendingUpload {
+                            path: local_path.clone(),
+                            node: node_id.clone(),
+                            accepted: false,
+                        },
+                    );
 
                     let file_name = local_path
                         .file_name()
@@ -622,6 +625,7 @@ pub async fn execute_command(
                         permissions,
                     };
                     let _ = net_tx_exec.send(NetCmd::SendToPeer(node_id, msg)).await;
+                    crate::event_loop::watch_acceptance(app_tx_exec, transfer_id);
                 } else {
                     println!("{} Local file not found: {:?}", "❌".red(), local_path);
                     std::process::exit(1);

@@ -60,6 +60,7 @@ impl Routers {
             self.desktop.set_screen_size(*w, *h);
         }
         let msg = self.pending.resolve(msg)?;
+        let msg = self.transfers.resolve(msg)?;
         let msg = web_davserver::feed_response(msg)?;
         let msg = self.terminal.route(msg)?;
         let msg = self.webvpn.route(msg)?;
@@ -797,7 +798,7 @@ impl ServerAuth {
         *self.registry_sink.borrow_mut() = Some(Rc::new(sink));
     }
 
-    fn connect_node(
+    async fn connect_node(
         &self,
         ws_url: String,
         access_token: &str,
@@ -812,7 +813,7 @@ impl ServerAuth {
         let mut my_info = self.my_info.clone();
         my_info.resources = default_shared_resources(&self.config);
         my_info.is_temporary = self.temporary.get();
-        let _ = self.net_tx.try_send(NetCmd::Connect(url, my_info, turn));
+        let _ = self.net_tx.send(NetCmd::Connect(url, my_info, turn)).await;
 
         match self.registry_sink.borrow().clone() {
             Some(sink) => {
@@ -875,7 +876,7 @@ impl AuthRpc for ServerAuth {
         self.temporary.set(false);
         self.config.set(GUEST_KEY, false);
         self.config.save();
-        self.connect_node(ws_url, &access_token, turn);
+        self.connect_node(ws_url, &access_token, turn).await;
         Ok(())
     }
 
@@ -888,7 +889,7 @@ impl AuthRpc for ServerAuth {
         self.temporary.set(true);
         self.config.set(GUEST_KEY, true);
         self.config.save();
-        self.connect_node(ws_url, &access_token, turn);
+        self.connect_node(ws_url, &access_token, turn).await;
         Ok(())
     }
 
@@ -942,7 +943,8 @@ impl AuthRpc for ServerAuth {
             }
         }
 
-        self.connect_node(resp.ws_url.clone(), &resp.access_token, resp.turn.clone());
+        self.connect_node(resp.ws_url.clone(), &resp.access_token, resp.turn.clone())
+            .await;
         Ok(RestoredSession {
             node_id: self.my_info.id.clone(),
             device_name: self.my_info.name.clone(),
@@ -967,7 +969,7 @@ impl AuthRpc for ServerAuth {
                 eprintln!("server logoff (best-effort) failed: {e}");
             }
         }
-        let _ = self.net_tx.try_send(NetCmd::Disconnect);
+        let _ = self.net_tx.send(NetCmd::Disconnect).await;
         self.config.set("app.refresh_token", "");
         self.config.set("app.account_login", "");
         self.config.save();
@@ -1000,6 +1002,37 @@ mod tests {
             Some((1920, 1080)),
             "without this the pointer maps onto a default screen and lands short"
         );
+    }
+
+    #[test]
+    fn a_receipt_reaches_the_upload_that_waits_for_it() {
+        let routers = Routers::new();
+        let rpc_id = uuid::Uuid::new_v4();
+        let mut rpc_rx = routers.transfers.register(rpc_id);
+        let dav_id = uuid::Uuid::new_v4();
+        let (dav_tx, mut dav_rx) = tokio::sync::mpsc::unbounded_channel();
+        web_davserver::get_pending_requests()
+            .lock()
+            .unwrap()
+            .insert(dav_id, dav_tx);
+        let _dav_guard = web_davserver::PendingGuard(dav_id);
+        let receipt = |transfer_id| P2pMessage::FileTransferReceipt {
+            transfer_id,
+            result: Ok(()),
+        };
+
+        assert!(routers.route(receipt(rpc_id)).is_none());
+        assert!(routers.route(receipt(dav_id)).is_none());
+        assert!(routers.route(receipt(uuid::Uuid::new_v4())).is_some());
+
+        assert!(matches!(
+            rpc_rx.try_recv(),
+            Ok(app_core::remote_fs::TransferEvent::Done(Ok(())))
+        ));
+        assert!(matches!(
+            dav_rx.try_recv(),
+            Ok(P2pMessage::FileTransferReceipt { transfer_id, .. }) if transfer_id == dav_id
+        ));
     }
 
     #[test]

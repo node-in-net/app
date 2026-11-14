@@ -29,3 +29,6 @@ open = "5.3.3"
 crossterm = "0.27.0"
 client-config = { workspace = true }
 chrono = "0.4"
+
+[dev-dependencies]
+tokio = { version = "1.36", features = ["full", "test-util"] }

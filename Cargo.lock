@@ -4236,6 +4236,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "icu_normalizer",
+ "libc",
  "md5",
  "network-interface",
  "nodeinnet-p2p",
@@ -4618,6 +4619,7 @@ version = "0.1.286"
 dependencies = [
  "async-trait",
  "client-core",
+ "libc",
  "node-functions",
  "nodeinnet-p2p",
  "p2p-node",
